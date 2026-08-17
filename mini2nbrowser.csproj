@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- 应用图标（exe + 任务栏） -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
+
+    <!-- ===== 冷启动优化 ===== -->
+    <!-- 分层编译：启动时用 QuickJIT 快速编译，热点方法后台优化 -->
+    <TieredCompilation>true</TieredCompilation>
+    <TieredCompilationQuickJit>true</TieredCompilationQuickJit>
+    <TieredCompilationQuickJitForLoops>false</TieredCompilationQuickJitForLoops>
+    <!-- ReadyToRun：预编译为原生代码，大幅减少启动时 JIT -->
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishReadyToRunEmitSymbols>false</PublishReadyToRunEmitSymbols>
+    <!-- 工作站 GC：启动更快、内存占用更低，适合桌面浏览器 -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <!-- 不生成 XML 文档 -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="HomePage.html" />
+  </ItemGroup>
+
+  <!-- 图标嵌入为 Resource，运行时零 IO 快速加载 -->
+  <ItemGroup>
+    <Resource Include="app.ico" />
+    <Resource Include="app_dark.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
+  </ItemGroup>
+
+</Project>

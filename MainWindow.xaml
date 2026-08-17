@@ -1,0 +1,723 @@
+<Window x:Class="mini2nbrowser.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        xmlns:local="clr-namespace:mini2nbrowser"
+        xmlns:tb="http://www.hardcodet.net/taskbar"
+        mc:Ignorable="d"
+        Title="2ⁿ Browser" Height="720" Width="1180"
+        Icon="/app.ico"
+        WindowStyle="SingleBorderWindow" AllowsTransparency="False"
+        Background="{DynamicResource WindowBg}"
+        MinHeight="400" MinWidth="700"
+        FontFamily="Segoe UI, Microsoft YaHei UI" FontSize="13"
+        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="ClearType">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="6"
+                      GlassFrameThickness="0" UseAeroCaptionButtons="False"
+                      CornerRadius="0"/>
+    </WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <local:BoolToVisibilityConverter x:Key="BoolToVis"/>
+        <local:NonZeroToVisibilityConverter x:Key="NonZeroToVisible"/>
+        <!-- 系统托盘图标 -->
+        <tb:TaskbarIcon x:Key="TrayIcon"
+            IconSource="/app.ico"
+            ToolTipText="mini2n Browser v1.0.0">
+            <tb:TaskbarIcon.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="显示浏览器" Click="TrayShowWindow_Click"/>
+                    <Separator/>
+                    <MenuItem Header="完全退出" Click="TrayExitApp_Click"/>
+                </ContextMenu>
+            </tb:TaskbarIcon.ContextMenu>
+        </tb:TaskbarIcon>
+    </Window.Resources>
+
+    <Grid x:Name="rootGrid" Background="{DynamicResource WindowBg}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="44"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- 顶部导航栏（固定，全宽） -->
+        <Grid x:Name="navBar" Grid.Row="0" Background="{DynamicResource ToolbarBg}"
+              shell:WindowChrome.IsHitTestVisibleInChrome="True">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 左侧导航控件 -->
+            <StackPanel Grid.Column="0" Orientation="Horizontal"
+                        VerticalAlignment="Center" Margin="10,0,0,0">
+                <Button x:Name="btnBack" Click="BtnBack_Click" Style="{DynamicResource ToolButton}"
+                        Width="32" Height="32" IsEnabled="False" ToolTip="后退">
+                    <Path Width="16" Height="16" Stretch="Uniform"
+                          Stroke="{DynamicResource TextColor}" StrokeThickness="2"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                          Data="M15 6l-6 6 6 6"/>
+                </Button>
+                <Button x:Name="btnForward" Click="BtnForward_Click" Style="{DynamicResource ToolButton}"
+                        Width="32" Height="32" IsEnabled="False" ToolTip="前进">
+                    <Path Width="16" Height="16" Stretch="Uniform"
+                          Stroke="{DynamicResource TextColor}" StrokeThickness="2"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                          Data="M9 6l6 6-6 6"/>
+                </Button>
+                <Button x:Name="btnReload" Click="BtnReload_Click" Style="{DynamicResource ToolButton}"
+                        Width="32" Height="32" ToolTip="刷新">
+                    <Path Width="16" Height="16" Stretch="Uniform"
+                          Fill="{DynamicResource TextColor}"
+                          Data="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                </Button>
+                <Button x:Name="btnStop" Click="BtnStop_Click" Style="{DynamicResource ToolButton}"
+                        Width="32" Height="32" Visibility="Collapsed" ToolTip="停止">
+                    <Path Width="14" Height="14" Stretch="Uniform"
+                          Fill="{DynamicResource TextColor}"
+                          Data="M6 6h12v12H6z"/>
+                </Button>
+                <Button x:Name="btnHome" Click="BtnHome_Click" Style="{DynamicResource ToolButton}"
+                        Width="32" Height="32" ToolTip="主页">
+                    <Path Width="16" Height="16" Stretch="Uniform"
+                          Fill="{DynamicResource TextColor}"
+                          Data="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+                </Button>
+
+                <TextBox x:Name="txtUrl" Width="380" Height="30" Margin="8,0,4,0"
+                         Style="{DynamicResource UrlBox}" KeyDown="TxtUrl_KeyDown"
+                         VerticalContentAlignment="Center" FontSize="12"/>
+
+                <Button x:Name="btnBookmark" Click="BtnBookmark_Click" Style="{DynamicResource ToolButton}"
+                        Width="32" Height="32" ToolTip="添加书签 (Ctrl+D)">
+                    <Path x:Name="iconBookmark" Width="16" Height="16" Stretch="Uniform"
+                          Fill="{DynamicResource TextColor}"
+                          Data="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z"/>
+                </Button>
+                <Button x:Name="btnBookmarksList" Click="BtnBookmarksList_Click"
+                        Style="{DynamicResource ToolButton}" Width="32" Height="32" ToolTip="收藏夹">
+                    <Path Width="16" Height="16" Stretch="Uniform"
+                          Fill="{DynamicResource TextColor}"
+                          Data="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/>
+                </Button>
+                <Button x:Name="btnPasswords" Click="BtnPasswords_Click"
+                        Style="{DynamicResource ToolButton}" Width="32" Height="32" ToolTip="密码管理">
+                    <Path Width="16" Height="16" Stretch="Uniform"
+                          Fill="{DynamicResource TextColor}"
+                          Data="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/>
+                </Button>
+                <Grid Width="32" Height="32">
+                    <Button x:Name="btnDownloads" Click="BtnDownloads_Click"
+                            Style="{DynamicResource ToolButton}" Width="32" Height="32" ToolTip="下载">
+                        <Path Width="16" Height="16" Stretch="Uniform"
+                              Fill="{DynamicResource TextColor}"
+                              Data="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                    </Button>
+                    <Border x:Name="downloadBadge" Visibility="Collapsed"
+                            HorizontalAlignment="Right" VerticalAlignment="Top"
+                            Background="{DynamicResource AccentBlue}" CornerRadius="8"
+                            Width="16" Height="16" Margin="0,2,2,0">
+                        <TextBlock x:Name="downloadBadgeText" Text="" FontSize="9"
+                                   Foreground="White" HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" FontWeight="Bold"/>
+                    </Border>
+                </Grid>
+                <Button x:Name="btnSettings" Click="BtnSettings_Click"
+                        Style="{DynamicResource ToolButton}" Width="32" Height="32" ToolTip="设置">
+                    <Path Width="16" Height="16" Stretch="Uniform"
+                          Fill="{DynamicResource TextColor}"
+                          Data="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94 0 .31.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+                </Button>
+            </StackPanel>
+
+            <!-- 右侧窗口控制按钮 -->
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Stretch">
+                <Button x:Name="btnMinimize" Click="BtnMinimize_Click"
+                        Style="{DynamicResource CaptionBtn}" Width="46" Height="44">
+                    <Path Width="10" Height="10" Stretch="Uniform"
+                          Stroke="{DynamicResource TextColor}" StrokeThickness="1.5"
+                          Data="M0 5h10"/>
+                </Button>
+                <Button x:Name="btnMaximize" Click="BtnMaximize_Click"
+                        Style="{DynamicResource CaptionBtn}" Width="46" Height="44">
+                    <Path x:Name="iconMaximize" Width="10" Height="10" Stretch="Uniform"
+                          Stroke="{DynamicResource TextColor}" StrokeThickness="1.5"
+                          Data="M0.5 0.5h9v9h-9z"/>
+                </Button>
+                <Button x:Name="btnClose" Click="BtnClose_Click"
+                        Style="{DynamicResource CaptionCloseBtn}" Width="46" Height="44">
+                    <Path Width="10" Height="10" Stretch="Uniform"
+                          Stroke="{DynamicResource TextColor}" StrokeThickness="1.5"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                          Data="M0 0l10 10M10 0L0 10"/>
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <!-- 下方区域：侧边栏 + 网页内容 -->
+        <Grid Grid.Row="1">
+            <!-- 左侧标签栏 -->
+            <Grid x:Name="tabSidebar" Width="36" Background="{DynamicResource ToolbarBg}"
+                  HorizontalAlignment="Left"
+                  MouseEnter="TabSidebar_MouseEnter" MouseLeave="TabSidebar_MouseLeave">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <ListBox x:Name="tabList" Grid.Row="0" Background="Transparent"
+                         BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         SelectionChanged="TabList_SelectionChanged" MouseDown="TabList_MouseDown">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="Background" Value="Transparent"/>
+                            <Setter Property="Padding" Value="0"/>
+                            <Setter Property="Margin" Value="3,2"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListBoxItem">
+                                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                                CornerRadius="8" Height="32">
+                                            <Grid>
+                                                <!-- 折叠视图：居中 favicon -->
+                                                <Grid x:Name="collapsedView" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                    <Grid Width="20" Height="20">
+                                                        <Path Width="18" Height="18" Stretch="Uniform"
+                                                              Fill="{DynamicResource TextColor}"
+                                                              Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+                                                        <Image Source="{Binding Favicon}" Width="20" Height="20"
+                                                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                                                    </Grid>
+                                                </Grid>
+                                                <!-- 展开视图：favicon + 标题 + 关闭 -->
+                                                <Grid x:Name="expandedView" Visibility="Collapsed" Margin="8,0">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid Grid.Column="0" Width="20" Height="20" VerticalAlignment="Center">
+                                                        <Path Width="18" Height="18" Stretch="Uniform"
+                                                              Fill="{DynamicResource TextColor}"
+                                                              Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+                                                        <Image Source="{Binding Favicon}" Width="20" Height="20"
+                                                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                                                    </Grid>
+                                                    <TextBlock Grid.Column="1" Text="{Binding Title}"
+                                                               VerticalAlignment="Center" Margin="8,0,4,0"
+                                                               TextTrimming="CharacterEllipsis" FontSize="12"
+                                                               Foreground="{DynamicResource TextColor}"/>
+                                                    <Button Grid.Column="2" Width="24" Height="24"
+                                                            Click="CloseTab_Click" Tag="{Binding Id}"
+                                                            Style="{DynamicResource ToolButton}"
+                                                            VerticalAlignment="Center" ToolTip="关闭标签">
+                                                        <Path Width="10" Height="10" Stretch="Uniform"
+                                                              Stroke="{DynamicResource TextColor}"
+                                                              StrokeThickness="2"
+                                                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                                              Data="M0 0l10 10M10 0L0 10"/>
+                                                    </Button>
+                                                </Grid>
+                                            </Grid>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <DataTrigger Binding="{Binding IsSidebarExpanded, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+                                                <Setter TargetName="collapsedView" Property="Visibility" Value="Collapsed"/>
+                                                <Setter TargetName="expandedView" Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentBlue}"/>
+                                            </Trigger>
+                                            <MultiTrigger>
+                                                <MultiTrigger.Conditions>
+                                                    <Condition Property="IsSelected" Value="False"/>
+                                                    <Condition Property="IsMouseOver" Value="True"/>
+                                                </MultiTrigger.Conditions>
+                                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBg}"/>
+                                            </MultiTrigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                </ListBox>
+
+                <!-- 新建标签按钮 -->
+                <Button x:Name="btnNewTab" Grid.Row="1" Click="BtnNewTab_Click"
+                        Height="36" HorizontalAlignment="Stretch"
+                        Margin="4,4,4,8" Style="{DynamicResource ToolButton}"
+                        HorizontalContentAlignment="Left"
+                        ToolTip="新建标签 (Ctrl+T)">
+                    <StackPanel Orientation="Horizontal" Margin="8,0">
+                        <Path Width="16" Height="16" Stretch="Uniform"
+                              Stroke="{DynamicResource TextColor}" StrokeThickness="2"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                              Data="M0 8h16M8 0v16"/>
+                        <TextBlock x:Name="txtNewTabLabel" Text="新建标签页" FontSize="12"
+                                   Margin="10,0,0,0" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextColor}"
+                                   Visibility="Collapsed"/>
+                    </StackPanel>
+                </Button>
+            </Grid>
+
+            <!-- 网页区域 -->
+            <Grid x:Name="webArea" Margin="42,6,6,6">
+                <Grid x:Name="webViewContainer"/>
+            </Grid>
+
+            <!-- 设置页 -->
+            <Grid x:Name="settingsPage" Margin="42,6,6,6" Visibility="Collapsed"
+                  Background="{DynamicResource WindowBg}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="30" MaxWidth="700">
+                        <!-- 顶部返回栏 -->
+                        <Grid Margin="0,0,0,16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Click="BtnCloseSettings_Click" Style="{DynamicResource ToolButton}"
+                                    Width="32" Height="32" ToolTip="返回">
+                                <Path Width="16" Height="16" Stretch="Uniform"
+                                      Stroke="{DynamicResource TextColor}" StrokeThickness="2"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Data="M15 6l-6 6 6 6"/>
+                            </Button>
+                            <TextBlock Grid.Column="1" Text="设置" FontSize="22" FontWeight="Bold"
+                                       Foreground="{DynamicResource TextColor}" VerticalAlignment="Center"
+                                       Margin="12,0,0,0"/>
+                        </Grid>
+
+                        <!-- 外观 -->
+                        <TextBlock Text="外观" FontSize="15" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AccentBlue}" Margin="0,10,0,8"/>
+                        <CheckBox x:Name="chkDarkMode" Content="深色模式" FontSize="13"
+                                  Foreground="{DynamicResource TextColor}" Margin="0,4"
+                                  Checked="ChkDarkMode_Checked" Unchecked="ChkDarkMode_Unchecked"/>
+
+                        <!-- 搜索引擎 -->
+                        <TextBlock Text="搜索引擎" FontSize="15" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AccentBlue}" Margin="0,20,0,8"/>
+                        <ListBox x:Name="lbEngines" Background="Transparent" BorderThickness="0"
+                                 MaxHeight="180" Margin="0,4"
+                                 SelectionChanged="LbEngines_SelectionChanged">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Height="36">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid Width="24" Height="24">
+                                            <Ellipse Fill="{Binding IconColor}"/>
+                                            <TextBlock Text="{Binding IconText}"
+                                                       Foreground="White" FontSize="11" FontWeight="Bold"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Grid>
+                                        <TextBlock Grid.Column="1" Text="{Binding Name}"
+                                                   VerticalAlignment="Center" Margin="10,0,0,0"
+                                                   Foreground="{DynamicResource TextColor}"/>
+                                        <Button Grid.Column="2" Content="删除" Width="50" Height="24"
+                                                Click="BtnDeleteEngine_Click" Tag="{Binding Name}"
+                                                FontSize="11"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <Button Content="添加搜索引擎" Width="120" Height="30" Margin="0,8,0,0"
+                                Click="BtnAddEngine_Click" HorizontalAlignment="Left"/>
+
+                        <!-- 智能防护 -->
+                        <TextBlock Text="智能防护" FontSize="15" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AccentBlue}" Margin="0,20,0,8"/>
+                        <CheckBox x:Name="chkProtection" Content="启用广告/跟踪拦截" FontSize="13"
+                                  Foreground="{DynamicResource TextColor}" Margin="0,4"
+                                  Checked="ChkProtection_Checked" Unchecked="ChkProtection_Unchecked"/>
+
+                        <!-- 密码管理 -->
+                        <TextBlock Text="密码管理" FontSize="15" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AccentBlue}" Margin="0,20,0,8"/>
+                        <TextBlock Text="自动捕获并加密保存网页登录密码，重启后自动填充。"
+                                   FontSize="12" Foreground="{DynamicResource TextColor}"
+                                   Opacity="0.7" TextWrapping="Wrap" Margin="0,4"/>
+                        <ItemsControl x:Name="lbPasswords" Margin="0,8">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{DynamicResource ToolbarBg}" CornerRadius="8"
+                                            Padding="12" Margin="0,4">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Text="{Binding Site}" FontSize="13"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource TextColor}"/>
+                                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                                    <TextBlock Text="{Binding Username}" FontSize="11"
+                                                               Foreground="{DynamicResource TextColor}"
+                                                               Opacity="0.65"/>
+                                                    <TextBlock Text="  ·  " FontSize="11"
+                                                               Foreground="{DynamicResource TextColor}"
+                                                               Opacity="0.4"/>
+                                                    <TextBlock Text="{Binding DisplayPassword}" FontSize="11"
+                                                               Foreground="{DynamicResource TextColor}"
+                                                               Opacity="0.65" FontFamily="Consolas"/>
+                                                </StackPanel>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                <Button Click="BtnRevealPassword_Click" Tag="{Binding Id}"
+                                                        Style="{DynamicResource ToolButton}"
+                                                        Width="28" Height="28" ToolTip="显示/隐藏密码">
+                                                    <Path Width="14" Height="14" Stretch="Uniform"
+                                                          Fill="{DynamicResource TextColor}"
+                                                          Data="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+                                                </Button>
+                                                <Button Click="BtnDeletePassword_Click" Tag="{Binding Id}"
+                                                        Content="删除" Width="48" Height="26" FontSize="11"
+                                                        VerticalAlignment="Center" Margin="4,0,0,0"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock x:Name="txtNoPasswords" Text="暂无保存的密码"
+                                   FontSize="12" Foreground="{DynamicResource TextColor}"
+                                   Opacity="0.4" Margin="0,8" Visibility="Collapsed"/>
+
+                        <!-- 历史记录 -->
+                        <TextBlock Text="历史记录" FontSize="15" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AccentBlue}" Margin="0,20,0,8"/>
+                        <TextBox x:Name="txtHistorySearch" Height="28" Margin="0,4"
+                                 Style="{DynamicResource UrlBox}" VerticalContentAlignment="Center"
+                                 TextChanged="TxtHistorySearch_TextChanged"
+                                 ToolTip="搜索历史记录"/>
+                        <ListBox x:Name="lbHistory" Background="Transparent" BorderThickness="0"
+                                 MaxHeight="200" Margin="0,4">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Click="HistoryItem_Click" Tag="{Binding Url}"
+                                            HorizontalContentAlignment="Left"
+                                            Background="Transparent" BorderThickness="0"
+                                            Padding="4" Cursor="Hand">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Title}" FontSize="12"
+                                                       Foreground="{DynamicResource TextColor}"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding Url}" FontSize="10"
+                                                       Foreground="{DynamicResource TextColor}"
+                                                       Opacity="0.5" TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                    </Button>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <Button Content="清除历史记录" Width="120" Height="30" Margin="0,8,0,0"
+                                Click="BtnClearHistory_Click" HorizontalAlignment="Left"/>
+
+                        <!-- 油猴脚本 -->
+                        <TextBlock Text="油猴脚本" FontSize="15" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AccentBlue}" Margin="0,20,0,8"/>
+                        <Button Content="添加脚本" Width="100" Height="30" Margin="0,4,0,8"
+                                Click="BtnAddScript_Click" HorizontalAlignment="Left"/>
+                        <ItemsControl x:Name="lbScripts">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{DynamicResource ToolbarBg}" CornerRadius="8"
+                                            Padding="12" Margin="0,4">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Text="{Binding Name}" FontSize="13"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource TextColor}"/>
+                                                <TextBlock Text="{Binding Match}" FontSize="11"
+                                                           Foreground="{DynamicResource TextColor}"
+                                                           Opacity="0.6" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                <CheckBox IsChecked="{Binding Enabled}"
+                                                          VerticalAlignment="Center" Margin="0,0,8,0"
+                                                          Checked="ScriptEnabled_Checked"
+                                                          Unchecked="ScriptEnabled_Unchecked"/>
+                                                <Button Content="编辑" Width="50" Height="24"
+                                                        Click="BtnEditScript_Click"
+                                                        Tag="{Binding Id}" FontSize="11" Margin="0,0,4,0"/>
+                                                <Button Content="删除" Width="50" Height="24"
+                                                        Click="BtnDeleteScript_Click"
+                                                        Tag="{Binding Id}" FontSize="11"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock Text="2ⁿ Browser v1.0.0" FontSize="11"
+                                   Foreground="{DynamicResource TextColor}" Opacity="0.4"
+                                   Margin="0,30,0,0" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <!-- 下载浮层 -->
+            <Grid x:Name="downloadsOverlay" Visibility="Collapsed"
+                  HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,10,10,0"
+                  MouseDown="DownloadsOverlay_MouseDown">
+                <Border Background="{DynamicResource ToolbarBg}" CornerRadius="8"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                        Width="320" MaxHeight="400" Padding="12">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                            <TextBlock Text="下载" FontSize="14" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextColor}" VerticalAlignment="Center"/>
+                            <Button Content="✕" Width="24" Height="24" HorizontalAlignment="Right"
+                                    Click="BtnCloseDownloads_Click" Background="Transparent"
+                                    BorderThickness="0" Foreground="{DynamicResource TextColor}" Cursor="Hand"/>
+                        </Grid>
+                        <ListBox x:Name="lbDownloads" Grid.Row="1" Background="Transparent"
+                                 BorderThickness="0" Margin="0,8,0,0" MaxHeight="340">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,4">
+                                        <TextBlock Text="{Binding FileName}" FontSize="12"
+                                                   Foreground="{DynamicResource TextColor}"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <ProgressBar Value="{Binding Progress}" Height="4" Margin="0,4,0,0"
+                                                     Minimum="0" Maximum="100"
+                                                     Foreground="{DynamicResource AccentBlue}"/>
+                                        <Grid Margin="0,4,0,0">
+                                            <TextBlock Text="{Binding SizeText}" FontSize="10"
+                                                       Foreground="{DynamicResource TextColor}" Opacity="0.6"
+                                                       HorizontalAlignment="Left"/>
+                                            <TextBlock Text="{Binding SpeedText}" FontSize="10"
+                                                       Foreground="{DynamicResource AccentBlue}"
+                                                       HorizontalAlignment="Right"/>
+                                        </Grid>
+                                        <Grid Margin="0,2,0,0">
+                                            <TextBlock Text="{Binding Status}" FontSize="10"
+                                                       Foreground="{DynamicResource TextColor}" Opacity="0.6"
+                                                       HorizontalAlignment="Left"/>
+                                            <TextBlock Text="{Binding RemainingText}" FontSize="10"
+                                                       Foreground="{DynamicResource TextColor}" Opacity="0.5"
+                                                       HorizontalAlignment="Right" Visibility="{Binding Speed, Converter={StaticResource NonZeroToVisible}}"/>
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
+                                                    Visibility="{Binding IsCompleted, Converter={StaticResource BoolToVis}}">
+                                            <Button Content="打开文件" FontSize="10" Padding="8,2"
+                                                    Click="BtnOpenDownloadedFile_Click" Tag="{Binding FilePath}"
+                                                    Background="Transparent" BorderBrush="{DynamicResource BorderBrush}"
+                                                    BorderThickness="1" Foreground="{DynamicResource TextColor}"
+                                                    Cursor="Hand" Margin="0,0,6,0"/>
+                                            <Button Content="打开文件夹" FontSize="10" Padding="8,2"
+                                                    Click="BtnOpenDownloadFolder_Click" Tag="{Binding FilePath}"
+                                                    Background="Transparent" BorderBrush="{DynamicResource BorderBrush}"
+                                                    BorderThickness="1" Foreground="{DynamicResource TextColor}"
+                                                    Cursor="Hand"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <!-- 收藏夹浮层 -->
+            <Grid x:Name="bookmarksOverlay" Visibility="Collapsed"
+                  HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,10,10,0"
+                  MouseDown="BookmarksOverlay_MouseDown">
+                <Border Background="{DynamicResource ToolbarBg}" CornerRadius="8"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                        Width="320" MaxHeight="400" Padding="12">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                            <TextBlock Text="收藏夹" FontSize="14" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextColor}" VerticalAlignment="Center"/>
+                            <Button Content="✕" Width="24" Height="24" HorizontalAlignment="Right"
+                                    Click="BtnCloseBookmarks_Click" Background="Transparent"
+                                    BorderThickness="0" Foreground="{DynamicResource TextColor}" Cursor="Hand"/>
+                        </Grid>
+                        <ListBox x:Name="lbBookmarksPopup" Grid.Row="1" Background="Transparent"
+                                 BorderThickness="0" Margin="0,8,0,0" MaxHeight="340"
+                                 VirtualizingStackPanel.IsVirtualizing="True"
+                                 VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                 ScrollViewer.CanContentScroll="True">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="Padding" Value="0"/>
+                                    <Setter Property="Margin" Value="0,1"/>
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ListBoxItem">
+                                                <Border x:Name="bd" Background="Transparent" CornerRadius="4"
+                                                        Padding="6,4">
+                                                    <ContentPresenter/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="bd" Property="Background"
+                                                                Value="{DynamicResource AccentBlue}"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Button Grid.Column="0" Click="BookmarkItem_Click"
+                                                Tag="{Binding Url}" Background="Transparent"
+                                                BorderThickness="0" HorizontalContentAlignment="Left"
+                                                Padding="0" Cursor="Hand">
+                                            <TextBlock Text="{Binding Title}" FontSize="12"
+                                                       Foreground="{DynamicResource TextColor}"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </Button>
+                                        <Button Grid.Column="1" Content="✕" Width="20" Height="20"
+                                                Click="BtnDeleteBookmark_Click" Tag="{Binding Url}"
+                                                Background="Transparent" BorderThickness="0"
+                                                Foreground="{DynamicResource TextColor}" FontSize="10"
+                                                Cursor="Hand" Opacity="0.4">
+                                            <Button.Style>
+                                                <Style TargetType="Button">
+                                                    <Setter Property="Opacity" Value="0.4"/>
+                                                    <Style.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter Property="Opacity" Value="1"/>
+                                                        </Trigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                        </Button>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <!-- 脚本编辑浮层 -->
+            <Grid x:Name="scriptEditorOverlay" Visibility="Collapsed" Background="#80000000">
+                <Border Background="{DynamicResource ToolbarBg}" CornerRadius="10" Width="560"
+                        Height="480" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="20">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock x:Name="txtScriptEditorTitle" Grid.Row="0" Text="添加脚本"
+                                   FontSize="16" FontWeight="Bold"
+                                   Foreground="{DynamicResource TextColor}" Margin="0,0,0,12"/>
+                        <TextBox x:Name="txtScriptName" Grid.Row="1" Height="30" Margin="0,0,0,8"
+                                 Style="{DynamicResource UrlBox}" VerticalContentAlignment="Center"
+                                 ToolTip="脚本名称"/>
+                        <TextBox x:Name="txtScriptMatch" Grid.Row="2" Height="30" Margin="0,0,0,8"
+                                 Style="{DynamicResource UrlBox}" VerticalContentAlignment="Center"
+                                 ToolTip="匹配规则，如 *://*/*"/>
+                        <TextBox x:Name="txtScriptCode" Grid.Row="3" Margin="0,0,0,8"
+                                 Style="{DynamicResource UrlBox}" AcceptsReturn="True"
+                                 AcceptsTab="True" TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"
+                                 ToolTip="JavaScript 代码"/>
+                        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="取消" Width="80" Height="30" Margin="0,0,8,0"
+                                    Click="BtnCancelScript_Click"/>
+                            <Button Content="保存" Width="80" Height="30"
+                                    Click="BtnSaveScript_Click"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <!-- 搜索引擎编辑浮层 -->
+            <Grid x:Name="engineEditorOverlay" Visibility="Collapsed" Background="#80000000">
+                <Border Background="{DynamicResource ToolbarBg}" CornerRadius="10" Width="420"
+                        Height="280" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="20">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock x:Name="txtEngineEditorTitle" Grid.Row="0" Text="添加搜索引擎"
+                                   FontSize="16" FontWeight="Bold"
+                                   Foreground="{DynamicResource TextColor}" Margin="0,0,0,12"/>
+                        <TextBlock Grid.Row="1" Text="名称" FontSize="12"
+                                   Foreground="{DynamicResource TextColor}" Margin="0,0,0,2"/>
+                        <TextBox x:Name="txtEngineName" Grid.Row="2" Height="28" Margin="0,0,0,8"
+                                 Style="{DynamicResource UrlBox}" VerticalContentAlignment="Center"/>
+                        <TextBlock Grid.Row="3" Text="URL 模板（用 {0} 代替关键词）" FontSize="12"
+                                   Foreground="{DynamicResource TextColor}" Margin="0,0,0,2"/>
+                        <TextBox x:Name="txtEngineUrl" Grid.Row="4" Height="28" Margin="0,0,0,8"
+                                 Style="{DynamicResource UrlBox}" VerticalContentAlignment="Center"/>
+                        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="取消" Width="80" Height="30" Margin="0,0,8,0"
+                                    Click="BtnCancelEngine_Click"/>
+                            <Button Content="保存" Width="80" Height="30"
+                                    Click="BtnSaveEngine_Click"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+
+        </Grid>
+
+        <!-- 下载完成通知 Toast -->
+        <Border x:Name="downloadToast" Visibility="Collapsed"
+                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Margin="0,0,16,16" CornerRadius="8"
+                Background="{DynamicResource ToolbarBg}"
+                BorderBrush="{DynamicResource AccentBlue}" BorderThickness="1"
+                Padding="14,10" Cursor="Hand" MouseDown="ToastOpenFile_Click">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="下载完成" FontSize="11" Foreground="{DynamicResource AccentBlue}" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="toastText" FontSize="12" Foreground="{DynamicResource TextColor}"
+                               TextTrimming="CharacterEllipsis" MaxWidth="260" Margin="0,2,0,0"/>
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="打开" FontSize="11" Foreground="{DynamicResource AccentBlue}"
+                           VerticalAlignment="Center" Margin="12,0,0,0" Cursor="Hand"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

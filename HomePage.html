@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2ⁿ</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            height: 100%;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+            transition: background 0.3s;
+        }
+
+        /* 浅色主题（默认） */
+        body {
+            background: #ffffff;
+        }
+
+        .logo {
+            font-size: 72px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #2488C8, #28A870);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: floatBreath 3.5s ease-in-out infinite;
+            margin-bottom: 32px;
+        }
+
+            .logo sup {
+                font-size: 0.45em;
+                vertical-align: 0.9em;
+            }
+
+        .search-box {
+            display: flex;
+            align-items: center;
+            width: 420px;
+            height: 48px;
+            border: 2px solid #2488C8;
+            border-radius: 26px;
+            overflow: hidden;
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+
+            .search-box:focus-within {
+                border-color: #28A870;
+                box-shadow: 0 0 0 4px rgba(40,168,112,0.12);
+            }
+
+            .search-box input {
+                flex: 1;
+                height: 100%;
+                border: none;
+                outline: none;
+                padding: 0 20px;
+                font-size: 15px;
+                background: transparent;
+                color: #102833;
+            }
+
+                .search-box input::placeholder {
+                    color: #8899aa;
+                }
+
+            .search-box button {
+                height: 100%;
+                padding: 0 24px;
+                border: none;
+                cursor: pointer;
+                background: linear-gradient(135deg, #2488C8, #28A870);
+                color: #fff;
+                font-size: 14px;
+                font-weight: 600;
+                transition: opacity 0.2s;
+            }
+
+                .search-box button:hover {
+                    opacity: 0.88;
+                }
+
+        /* 深色主题 */
+        body.dark {
+            background: #14101e;
+        }
+
+            body.dark .logo {
+                background: linear-gradient(135deg, #a78bfa, #ffffff);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
+            body.dark .search-box {
+                border-color: #a78bfa;
+            }
+
+                body.dark .search-box:focus-within {
+                    border-color: #c4b5fd;
+                    box-shadow: 0 0 0 4px rgba(167,139,250,0.18);
+                }
+
+                body.dark .search-box input {
+                    color: #e0e6f0;
+                }
+
+                    body.dark .search-box input::placeholder {
+                        color: #6b7280;
+                    }
+
+                body.dark .search-box button {
+                    background: linear-gradient(135deg, #a78bfa, #7c3aed);
+                }
+
+        @keyframes floatBreath {
+            0%, 100% {
+                transform: translateY(0);
+                opacity: 1;
+            }
+
+            50% {
+                transform: translateY(-8px);
+                opacity: 0.85;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="logo">2<sup>n</sup></div>
+    <form class="search-box" onsubmit="doSearch(event)">
+        <input type="text" id="searchInput" placeholder="搜索" autofocus>
+        <button type="submit">搜索</button>
+    </form>
+    <script>
+        var params = new URLSearchParams(window.location.search);
+
+        // 主题
+        if (params.get('theme') === 'dark') {
+        document.body.classList.add('dark');
+        }
+
+        // 搜索引擎（从 URL 参数读取）
+        var engine = params.get('engine') || 'bing';
+        var searchUrls = {
+        'bing':   'https://www.bing.com/search?q=',
+        'baidu':  'https://www.baidu.com/s?wd=',
+        'google': 'https://www.google.com/search?q='
+        };
+
+        function doSearch(e) {
+        e.preventDefault();
+        var q = document.getElementById('searchInput').value.trim();
+        if (q) {
+        var base = searchUrls[engine] || searchUrls['bing'];
+        window.location.href = base + encodeURIComponent(q);
+        }
+        }
+    </script>
+</body>
+</html>

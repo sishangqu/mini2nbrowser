@@ -1,0 +1,10 @@
+bin/
+obj/
+publish/
+.vs/
+*.json
+*.log
+*.exe
+*.zip
+Thumbs.db
+.DS_Store
