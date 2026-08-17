@@ -1,16 +1,19 @@
 using System;
+using System.IO;
+using System.IO.Pipes;
 using System.Runtime;
-using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Interop;
 
 namespace mini2nbrowser
 {
     public partial class App : Application
     {
         private Mutex? _appMutex;
+        private CancellationTokenSource? _pipeCts;
         public const string UniqueMutexName = "mini2nbrowser-Browser-v1.0.0-Unique";
+        public const string PipeName = "mini2nbrowser-restore-v1.0.0";
 
         protected override void OnStartup(StartupEventArgs e)
         {
@@ -20,8 +23,8 @@ namespace mini2nbrowser
 
             if (!createdNew)
             {
-                // 已有实例在后台运行 → 唤醒已有窗口，毫秒级热启动
-                NativeMethods.BringExistingInstanceToFront();
+                // 已有实例在后台运行 → 通过命名管道通知已有窗口热启动
+                SignalRestore();
                 Shutdown();
                 return;
             }
@@ -37,53 +40,64 @@ namespace mini2nbrowser
             // 启动阶段低延迟 GC，减少 Full GC 阻塞 UI
             try { GCSettings.LatencyMode = GCLatencyMode.LowLatency; } catch { }
 
+            // 启动命名管道服务器，监听后续实例的唤醒请求
+            StartPipeServer();
+
             base.OnStartup(e);
         }
 
         protected override void OnExit(ExitEventArgs e)
         {
+            _pipeCts?.Cancel();
             try { GCSettings.LatencyMode = GCLatencyMode.Interactive; } catch { }
             _appMutex?.ReleaseMutex();
             _appMutex?.Dispose();
             base.OnExit(e);
         }
-    }
 
-    /// <summary>Win32 帮助类：唤醒已运行的主窗口</summary>
-    internal static class NativeMethods
-    {
-        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-        [DllImport("user32.dll")]
-        private static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
-
-        [DllImport("user32.dll")]
-        private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-        [DllImport("user32.dll")]
-        private static extern bool IsIconic(IntPtr hWnd);
-
-        private const int SW_RESTORE = 9;
-        private const int SW_SHOW = 5;
-
-        public static void BringExistingInstanceToFront()
+        /// <summary>命名管道服务器：监听新实例发来的唤醒请求</summary>
+        private void StartPipeServer()
         {
-            EnumWindows((hwnd, _) =>
+            _pipeCts = new CancellationTokenSource();
+            var token = _pipeCts.Token;
+            Task.Run(async () =>
             {
-                var source = HwndSource.FromHwnd(hwnd);
-                if (source?.RootVisual is MainWindow mw)
+                while (!token.IsCancellationRequested)
                 {
-                    mw.RestoreFromTray();
-                    if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
-                    else ShowWindow(hwnd, SW_SHOW);
-                    SetForegroundWindow(hwnd);
-                    return false;
+                    try
+                    {
+                        using var server = new NamedPipeServerStream(PipeName, PipeDirection.InOut, 1,
+                            PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                        await server.WaitForConnectionAsync(token);
+                        using var reader = new StreamReader(server, leaveOpen: true);
+                        var msg = await reader.ReadLineAsync(token);
+                        if (msg == "restore")
+                        {
+                            Dispatcher.Invoke(() =>
+                            {
+                                if (MainWindow is MainWindow mw)
+                                    mw.RestoreFromTray();
+                            });
+                        }
+                    }
+                    catch (OperationCanceledException) { break; }
+                    catch { await Task.Delay(500); }
                 }
-                return true;
-            }, IntPtr.Zero);
+            }, token);
+        }
+
+        /// <summary>新实例向已有实例发送唤醒信号</summary>
+        private static void SignalRestore()
+        {
+            try
+            {
+                using var client = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.None);
+                client.Connect(2000);
+                using var writer = new StreamWriter(client, leaveOpen: true);
+                writer.WriteLine("restore");
+                writer.Flush();
+            }
+            catch { }
         }
     }
 }
