@@ -27,7 +27,7 @@
         <!-- 系统托盘图标 -->
         <tb:TaskbarIcon x:Key="TrayIcon"
             IconSource="/app.ico"
-            ToolTipText="mini2n Browser v1.0.0">
+            ToolTipText="mini2n Browser v1.1.0">
             <tb:TaskbarIcon.ContextMenu>
                 <ContextMenu>
                     <MenuItem Header="显示浏览器" Click="TrayShowWindow_Click"/>
@@ -46,7 +46,8 @@
 
         <!-- 顶部导航栏（固定，全宽） -->
         <Grid x:Name="navBar" Grid.Row="0" Background="{DynamicResource ToolbarBg}"
-              shell:WindowChrome.IsHitTestVisibleInChrome="True">
+              shell:WindowChrome.IsHitTestVisibleInChrome="True"
+              PreviewMouseLeftButtonDown="NavBar_PreviewMouseLeftButtonDown">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
@@ -91,6 +92,11 @@
                 <TextBox x:Name="txtUrl" Width="380" Height="30" Margin="8,0,4,0"
                          Style="{DynamicResource UrlBox}" KeyDown="TxtUrl_KeyDown"
                          VerticalContentAlignment="Center" FontSize="12"/>
+                <!-- 无痕模式指示图标（仅无痕标签页显示） -->
+                <Path x:Name="iconIncognito" Width="14" Height="14" Stretch="Uniform"
+                      Margin="4,0,8,0" Visibility="Collapsed"
+                      Fill="#8B5CF6" VerticalAlignment="Center"
+                      Data="M12 1C7 1 3 5 3 10v2h18v-2c0-5-4-9-9-9zM7 13c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm10 0c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3z"/>
 
                 <Button x:Name="btnBookmark" Click="BtnBookmark_Click" Style="{DynamicResource ToolButton}"
                         Width="32" Height="32" ToolTip="添加书签 (Ctrl+D)">
@@ -126,6 +132,18 @@
                                    VerticalAlignment="Center" FontWeight="Bold"/>
                     </Border>
                 </Grid>
+                <Button x:Name="btnExtensions" Click="BtnExtensions_Click"
+                        Style="{DynamicResource ToolButton}" Width="32" Height="32" ToolTip="扩展管理">
+                    <Path Width="16" Height="16" Stretch="Uniform"
+                          Fill="{DynamicResource TextColor}"
+                          Data="M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5C13 2.12 11.88 1 10.5 1S8 2.12 8 3.5V5H4c-1.1 0-1.99.9-1.99 2v3.8H3.5c1.49 0 2.7 1.21 2.7 2.7s-1.21 2.7-2.7 2.7H2V20c0 1.1.9 2 2 2h3.8v-1.5c0-1.49 1.21-2.7 2.7-2.7 1.49 0 2.7 1.21 2.7 2.7V22H17c1.1 0 2-.9 2-2v-4h1.5c1.38 0 2.5-1.12 2.5-2.5S21.88 11 20.5 11z"/>
+                </Button>
+                <Button x:Name="btnIncognito" Click="BtnIncognito_Click"
+                        Style="{DynamicResource ToolButton}" Width="32" Height="32" ToolTip="新建无痕标签页 (Ctrl+Shift+N)">
+                    <Path Width="16" Height="16" Stretch="Uniform"
+                          Fill="{DynamicResource TextColor}"
+                          Data="M12 1C7 1 3 5 3 10v2h18v-2c0-5-4-9-9-9zM7 13c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm10 0c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3z"/>
+                </Button>
                 <Button x:Name="btnSettings" Click="BtnSettings_Click"
                         Style="{DynamicResource ToolButton}" Width="32" Height="32" ToolTip="设置">
                     <Path Width="16" Height="16" Stretch="Uniform"
@@ -465,7 +483,7 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
 
-                        <TextBlock Text="2ⁿ Browser v1.0.0" FontSize="11"
+                        <TextBlock Text="2ⁿ Browser v1.1.0" FontSize="11"
                                    Foreground="{DynamicResource TextColor}" Opacity="0.4"
                                    Margin="0,30,0,0" HorizontalAlignment="Center"/>
                     </StackPanel>

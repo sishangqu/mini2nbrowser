@@ -1,9 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-	<PublishSingleFile>true</PublishSingleFile>
-	<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-	<EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
@@ -11,6 +8,9 @@
     <UseWPF>true</UseWPF>
     <!-- 应用图标（exe + 任务栏） -->
     <ApplicationIcon>app.ico</ApplicationIcon>
+    <Version>1.1.0</Version>
+    <FileVersion>1.1.0.0</FileVersion>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
 
     <!-- ===== 冷启动优化 ===== -->
     <!-- 分层编译：启动时用 QuickJIT 快速编译，热点方法后台优化 -->

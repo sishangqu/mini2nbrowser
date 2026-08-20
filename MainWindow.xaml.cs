@@ -12,6 +12,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -74,6 +75,10 @@ namespace mini2nbrowser
             get => _favicon;
             set { _favicon = value; OnPropertyChanged(); }
         }
+
+        /// <summary>该标签页是否为无痕模式</summary>
+        public bool IsIncognito { get; set; }
+
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string? name = null)
             => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
@@ -309,6 +314,16 @@ namespace mini2nbrowser
         private string? _editingEngineName;
         private readonly System.Timers.Timer _memoryTimer;
 
+        // ===== 扩展与无痕：共享 WebView2 环境，开启扩展支持 =====
+        private CoreWebView2Environment? _webViewEnvironment;
+        private ExtensionsManager? _extensionsManager;
+        private bool _extensionsLoadedForDefaultProfile;
+        private ExtensionsWindow? _extensionsWindow;
+
+        // ===== 数据目录与 profile（多实例隔离）=====
+        private readonly string _dataDir;
+        private readonly string _profileName;
+
         // 系统托盘
         private Hardcodet.Wpf.TaskbarNotification.TaskbarIcon? _trayIcon;
         private bool _isClosingFromTray;
@@ -372,8 +387,10 @@ namespace mini2nbrowser
             catch { return null!; }
         }
 
-        public MainWindow()
+        public MainWindow(string dataDir, string profileName)
         {
+            _dataDir = dataDir;
+            _profileName = profileName;
             InitializeComponent();
 
             // 仅同步加载最关键的配置（决定主题/搜索引擎，影响首屏渲染）
@@ -400,6 +417,10 @@ namespace mini2nbrowser
             _trayIcon = Resources["TrayIcon"] as Hardcodet.Wpf.TaskbarNotification.TaskbarIcon;
             if (_trayIcon != null)
             {
+                // 多实例时托盘提示区分 profile
+                _trayIcon.ToolTipText = string.IsNullOrEmpty(_profileName)
+                    ? "mini2n Browser v1.1.0"
+                    : $"mini2n Browser v1.1.0 [{_profileName}]";
                 _trayIcon.TrayLeftMouseUp += (s, e) => RestoreFromTray();
             }
 
@@ -411,6 +432,15 @@ namespace mini2nbrowser
             _memoryTimer = new System.Timers.Timer(30000);
             _memoryTimer.Elapsed += (s, e) => CleanMemory();
             _memoryTimer.Start();
+
+            // 初始化扩展管理器（必须在首个标签页创建之前完成，否则扩展不会被加载）
+            try
+            {
+                ExtensionsManager.CheckSupport();
+                _extensionsManager = new ExtensionsManager(_dataDir);
+                _extensionsManager.LoadConfig();
+            }
+            catch { _extensionsManager = null; }
 
             // 延迟到空闲优先级创建首个标签页，让窗口先渲染出来（毫秒级冷启动关键）
             Dispatcher.BeginInvoke(new Action(NewTab),
@@ -428,7 +458,74 @@ namespace mini2nbrowser
             try { LoadPasswords(); } catch { }
         }
 
+        /// <summary>获取共享 WebView2 环境（开启扩展支持）。无痕标签也用同一环境，仅 controller 选项不同。</summary>
+        private async Task<CoreWebView2Environment> GetWebViewEnvironmentAsync()
+        {
+            if (_webViewEnvironment != null) return _webViewEnvironment;
+            var options = new CoreWebView2EnvironmentOptions
+            {
+                AreBrowserExtensionsEnabled = true
+            };
+            string userData = Path.Combine(_dataDir, "WebViewData");
+            _webViewEnvironment = await CoreWebView2Environment.CreateAsync(
+                userDataFolder: userData, options: options);
+            return _webViewEnvironment;
+        }
+
+        /// <summary>把已启用扩展加载到默认 profile（仅首次加载，避免重复）</summary>
+        private async Task EnsureExtensionsLoadedAsync(CoreWebView2Profile profile)
+        {
+            if (_extensionsLoadedForDefaultProfile) return;
+            _extensionsLoadedForDefaultProfile = true;
+            if (_extensionsManager != null)
+            {
+                _extensionsManager.SetProfile(profile);
+                try { await _extensionsManager.LoadAllEnabledAsync(); }
+                catch { }
+            }
+        }
+
         #region 窗口控制（系统原生动画）
+        /// <summary>导航栏整行拖动：双击最大化/还原，单击按下后开始拖拽；排除按钮、地址栏等可交互控件</summary>
+        private void NavBar_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            // 判断鼠标是否点在可交互控件上（按钮、地址栏、TextBox等），若是则跳过 DragMove
+            if (e.OriginalSource is DependencyObject src)
+            {
+                if (FindParent<ButtonBase>(src) != null) return;
+                if (FindParent<TextBox>(src) != null) return;
+                if (FindParent<ComboBox>(src) != null) return;
+                if (FindParent<CheckBox>(src) != null) return;
+            }
+
+            if (e.ClickCount == 2)
+            {
+                // 双击标题栏 → 切换最大化/还原
+                WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+                e.Handled = true;
+            }
+            else if (e.ButtonState == MouseButtonState.Pressed)
+            {
+                // 单击按下 → 开始拖动
+                // 最大化状态下拖动：先还原窗口，然后按鼠标位置将窗口"挂"到光标处，体验更自然
+                if (WindowState == WindowState.Maximized)
+                {
+                    var ratio = e.GetPosition(this).X / ActualWidth;
+                    WindowState = WindowState.Normal;
+                    double w = ActualWidth;
+                    double h = ActualHeight;
+                    double scrW = SystemParameters.WorkArea.Width;
+                    double scrH = SystemParameters.WorkArea.Height;
+                    var mouseX = e.GetPosition(this).X;
+                    Left = Math.Clamp(mouseX - w * ratio, 0, Math.Max(0, scrW - w));
+                    Top = Math.Clamp(0, 0, Math.Max(0, scrH - h));
+                }
+                try { DragMove(); }
+                catch { /* 边界情况下可能抛异常，忽略 */ }
+                e.Handled = true;
+            }
+        }
+
         private void BtnMinimize_Click(object sender, RoutedEventArgs e)
             => WindowState = WindowState.Minimized;
 
@@ -473,11 +570,18 @@ namespace mini2nbrowser
         /// <summary>从托盘恢复窗口（热唤醒，毫秒级）</summary>
         public void RestoreFromTray()
         {
-            Show();
-            WindowState = WindowState.Normal;
+            // 若窗口已隐藏（最小化到托盘），先 Show 再恢复
+            if (!IsVisible)
+            {
+                Show();
+            }
+            if (WindowState == WindowState.Minimized)
+                WindowState = WindowState.Normal;
             Activate();
+            // 用 Topmost 双重赋值强制前置（WPF 标准技巧）
             Topmost = true;
             Topmost = false;
+            Focus();
         }
 
         /// <summary>拦截窗口关闭：点 X 不退出，最小化到托盘</summary>
@@ -536,15 +640,21 @@ namespace mini2nbrowser
                 else if (e.Key == Key.T) { NewTab(); e.Handled = true; }
                 else if (e.Key == Key.D) { ToggleBookmark(); e.Handled = true; }
             }
+            // Ctrl+Shift+N：新建无痕标签页
+            else if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && e.Key == Key.N)
+            {
+                NewIncognitoTab();
+                e.Handled = true;
+            }
         }
         #endregion
 
         #region 配置 & 主题
-        private static string ConfigPath => Path.Combine(AppContext.BaseDirectory, "config.json");
-        private static string ScriptsPath => Path.Combine(AppContext.BaseDirectory, "scripts.json");
-        private static string HistoryPath => Path.Combine(AppContext.BaseDirectory, "history.json");
-        private static string BookmarksPath => Path.Combine(AppContext.BaseDirectory, "bookmarks.json");
-        private static string PasswordsPath => Path.Combine(AppContext.BaseDirectory, "passwords.json");
+        private string ConfigPath => Path.Combine(_dataDir, "config.json");
+        private string ScriptsPath => Path.Combine(_dataDir, "scripts.json");
+        private string HistoryPath => Path.Combine(_dataDir, "history.json");
+        private string BookmarksPath => Path.Combine(_dataDir, "bookmarks.json");
+        private string PasswordsPath => Path.Combine(_dataDir, "passwords.json");
 
         private void LoadConfig()
         {
@@ -1345,17 +1455,23 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
 
         private void BtnNewTab_Click(object sender, RoutedEventArgs e) => NewTab();
 
-        private void NewTab() => CreateAndAddTab(GetHomeUrl());
+        private void NewTab() => CreateAndAddTab(GetHomeUrl(), false);
 
-        private void NewTabWithUrl(string url) => CreateAndAddTab(url);
+        private void NewTabWithUrl(string url) => CreateAndAddTab(url, false);
 
-        private async void CreateAndAddTab(string initialUrl)
+        /// <summary>新建无痕标签页</summary>
+        private void NewIncognitoTab() => CreateAndAddTab(GetHomeUrl(), true);
+
+        /// <summary>创建并添加新标签页</summary>
+        /// <param name="initialUrl">初始 URL</param>
+        /// <param name="incognito">是否为无痕模式</param>
+        private async void CreateAndAddTab(string initialUrl, bool incognito)
         {
             // 新建标签页时关闭设置页，回到网页视图
             settingsPage.Visibility = Visibility.Collapsed;
             webArea.Visibility = Visibility.Visible;
 
-            var tab = new TabInfo();
+            var tab = new TabInfo { IsIncognito = incognito };
             _tabs.Add(tab);
             tabList.SelectedItem = tab;
 
@@ -1367,12 +1483,27 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             webViewContainer.Children.Add(wv);
             _webViews[tab.Id] = wv;
 
-            await wv.EnsureCoreWebView2Async();
-            wv.CoreWebView2.Settings.IsPasswordAutosaveEnabled = true;
-            wv.CoreWebView2.Settings.IsGeneralAutofillEnabled = true;
+            // 使用共享环境（开启扩展支持），通过 CreationProperties 区分无痕/普通
+            var env = await GetWebViewEnvironmentAsync();
+            wv.CreationProperties = new Microsoft.Web.WebView2.Wpf.CoreWebView2CreationProperties
+            {
+                IsInPrivateModeEnabled = incognito
+            };
+            await wv.EnsureCoreWebView2Async(env);
+
+            wv.CoreWebView2.Settings.IsPasswordAutosaveEnabled = !incognito;
+            wv.CoreWebView2.Settings.IsGeneralAutofillEnabled = !incognito;
             wv.CoreWebView2.Profile.PreferredColorScheme = _config.IsDarkMode
                 ? CoreWebView2PreferredColorScheme.Dark
                 : CoreWebView2PreferredColorScheme.Light;
+
+            // 仅普通标签页加载扩展（无痕标签页不加载扩展，符合无痕语义）
+            if (!incognito)
+            {
+                await EnsureExtensionsLoadedAsync(wv.CoreWebView2.Profile);
+            }
+
+            UpdateIncognitoIndicator();
 
             SetupPasswordCapture(wv);
             SetupProtection(wv);
@@ -1438,17 +1569,27 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                         UpdateBookmarkIcon(url);
                         UpdatePageTitle(tab.Title);
                     }
-                    AddHistory(wv.CoreWebView2.Source, tab.Title);
-                    InjectScripts(wv, wv.CoreWebView2.Source);
-                    InjectPasswordAutofill(wv, wv.CoreWebView2.Source);
-                    try { wv.CoreWebView2.ExecuteScriptAsync(PasswordCaptureScript); } catch { }
+                    // 无痕标签页：不记历史、不自动填充密码、不捕获密码
+                    if (!incognito)
+                    {
+                        AddHistory(wv.CoreWebView2.Source, tab.Title);
+                        InjectScripts(wv, wv.CoreWebView2.Source);
+                        InjectPasswordAutofill(wv, wv.CoreWebView2.Source);
+                        try { wv.CoreWebView2.ExecuteScriptAsync(PasswordCaptureScript); } catch { }
+                    }
+                    else
+                    {
+                        // 无痕标签页仍可注入用户脚本（用户主动选择），但不记录任何数据
+                        InjectScripts(wv, wv.CoreWebView2.Source);
+                    }
                 });
             };
 
             wv.CoreWebView2.NewWindowRequested += (s, e) =>
             {
                 e.Handled = true;
-                Dispatcher.Invoke(() => NewTabWithUrl(e.Uri));
+                // 继承当前标签页的无痕状态
+                Dispatcher.Invoke(() => CreateAndAddTab(e.Uri, incognito));
             };
 
             wv.CoreWebView2.SourceChanged += (s, e) =>
@@ -1475,10 +1616,21 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                 var url = wv.CoreWebView2?.Source ?? "";
                 txtUrl.Text = url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase) ? "" : url;
                 UpdateBookmarkIcon(url);
-                UpdatePageTitle(tab.Title);
                 btnBack.IsEnabled = wv.CoreWebView2?.CanGoBack ?? false;
                 btnForward.IsEnabled = wv.CoreWebView2?.CanGoForward ?? false;
             }
+            UpdateIncognitoIndicator();
+        }
+
+        /// <summary>更新无痕模式视觉指示：URL 栏左侧紫色"无痕"图标、窗口标题前缀</summary>
+        private void UpdateIncognitoIndicator()
+        {
+            if (iconIncognito == null) return;
+            var tab = tabList.SelectedItem as TabInfo;
+            bool incog = tab?.IsIncognito ?? false;
+            iconIncognito.Visibility = incog ? Visibility.Visible : Visibility.Collapsed;
+            // 标题前缀由 UpdatePageTitle 自动处理
+            UpdatePageTitle(tab?.Title ?? "");
         }
 
         private void TabList_MouseDown(object sender, MouseButtonEventArgs e)
@@ -1539,6 +1691,10 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
         private void UpdatePageTitle(string title)
         {
             string display = string.IsNullOrEmpty(title) ? "2ⁿ Browser" : title;
+            // 无痕标签页标题加前缀（仅在当前选中标签页是无痕时）
+            var tab = tabList.SelectedItem as TabInfo;
+            if (tab?.IsIncognito == true && !display.StartsWith("[无痕]"))
+                display = $"[无痕] {display}";
             Title = display;
         }
         #endregion
@@ -1550,6 +1706,40 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             webArea.Visibility = Visibility.Collapsed;
             UpdatePageTitle("设置");
         }
+
+        #region 无痕模式
+        private void BtnIncognito_Click(object sender, RoutedEventArgs e) => NewIncognitoTab();
+        #endregion
+
+        #region 扩展管理
+        private void BtnExtensions_Click(object sender, RoutedEventArgs e)
+        {
+            if (_extensionsManager == null)
+            {
+                MessageBox.Show("扩展功能初始化失败，请检查 WebView2 运行时是否已安装。",
+                    "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            if (!ExtensionsManager.IsSupported)
+            {
+                MessageBox.Show("当前 WebView2 运行时版本过低，扩展功能需要 ≥1.0.2045。\n请更新 WebView2 Runtime 后重启应用。",
+                    "版本不支持", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            // 单实例：已打开则前置
+            if (_extensionsWindow != null && _extensionsWindow.IsLoaded)
+            {
+                _extensionsWindow.Activate();
+                return;
+            }
+            _extensionsWindow = new ExtensionsWindow(_extensionsManager)
+            {
+                Owner = this
+            };
+            _extensionsWindow.Closed += (s, e) => _extensionsWindow = null;
+            _extensionsWindow.Show();
+        }
+        #endregion
 
         private void BtnCloseSettings_Click(object sender, RoutedEventArgs e)
         {
