@@ -13,6 +13,8 @@
     <SolidColorBrush x:Key="AccentHover" Color="#1E73B0"/>
     <SolidColorBrush x:Key="ButtonBg" Color="#F0F3F7"/>
     <SolidColorBrush x:Key="ButtonHover" Color="#E2E8EF"/>
+    <SolidColorBrush x:Key="BorderColor" Color="#D0D7DE"/>
+    <SolidColorBrush x:Key="SecondaryText" Color="#6B7A8C"/>
 
     <!-- 图标按钮 -->
     <Style x:Key="ToolButton" TargetType="Button">

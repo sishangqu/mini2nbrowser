@@ -10,7 +10,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D4?logo=windows&logoColor=white)](#)
 [![License](https://img.shields.io/badge/License-MIT-success.svg)](#)
 
-**v1.1.0** · 多标签 · 无痕浏览 · 扩展支持 · 油猴脚本 · 双主题 · 密码管理 · 系统托盘
+**v1.4.0** · 多标签 · 无痕浏览 · 扩展支持 · 油猴脚本 · 双主题 · 密码管理 · 系统托盘 · PDF 批注 · 搜索引擎关键字
 
 </div>
 
@@ -27,9 +27,25 @@
 
 ### 🗂 标签页管理
 - 多标签 WebView2 实例，独立用户数据隔离
-- 左侧栏悬停展开（36 → 180px 动画过渡）
+- 左侧栏悬停展开（32 → 180px 动画过渡），可折叠状态更紧凑
 - 中键关闭、Ctrl+T 新建、Ctrl+W 关闭
-- 标签页显示网站图标 + 标题
+- 标签页显示网站图标 + 标题，尺寸与间距全面优化，无遮挡无重叠
+
+### 📑 PDF 批注面板（v1.4 新增）
+- **本地 PDF 直接打开**：菜单项"打开本地 PDF..."或拖入窗口
+- **侧边浮动面板**：不遮挡 WebView2 原生 PDF 控件（缩放/保存/旋转/分页）
+- **高亮 6 色盘 + 文字 7 色盘**：快速切换批注与文字颜色
+- **6 种批注工具**：高亮 / 下划线 / 删除线 / 便签 / 自由划线 / 橡皮擦
+- **字号 + 线宽独立调节**，撤销 / 全部清除 / 导出批注 / 一键打印
+- 跟随窗口移动与缩放自适应
+
+### 🔍 搜索引擎系统（v1.4 新增）
+- **预置 7 个引擎**：必应（默认）、百度、搜狗、360、头条搜索、GitHub、StackOverflow
+- **地址栏关键字触发**：输入 `gh wpf` → GitHub 搜索；`bd xxx` → 百度搜索；`so xxx` → StackOverflow
+- **一键切换默认引擎**，管理面板支持新增 / 删除 / 编辑 URL 模板
+- **配置持久化**：JSON 保存到 `%AppData%/mini2nbrowser/config.json`，重启自动恢复
+- **旧配置自动迁移**：`{0}` → `%s` 占位符、旧引擎名自动映射
+- 支持自定义 `Keyword` / `SearchUrl` / `SuggestUrl`
 
 ### 🕵️ 无痕浏览
 - 基于 `CoreWebView2CreationProperties.IsInPrivateModeEnabled` 的真无痕模式
@@ -63,8 +79,8 @@
 - 可视化管理面板
 
 ### 🌐 导航与搜索
-- 智能地址解析：URL / 域名 / 搜索词自动识别
-- 预置 Bing / 百度 / Google，可自定义搜索引擎
+- 智能地址解析：URL / 域名 / 搜索词自动识别，支持关键字触发（见搜索引擎系统）
+- 7 个预置搜索引擎 + 无限自定义，可一键切换默认引擎
 - 书签管理（JSON 持久化，浮动面板）
 - 历史记录（最多 500 条，可搜索过滤）
 
@@ -104,13 +120,13 @@
 
 ### 三种发行版
 
-| 版本 | 大小 | 说明 | 适合场景 |
-|---|---|---|---|
-| **框架依赖版** (exe) | ~5 MB | 单文件 exe，需目标机已安装 .NET 8 Desktop Runtime | 体积小，多机共用 |
-| **独立运行时版** (exe) | ~75 MB | 单文件 exe，内置 .NET 8 运行时，免安装 | 单机部署，开箱即用 |
-| **框架依赖版** (zip) | ~5 MB | 压缩包，解压即用，需 .NET 8 Desktop Runtime | 绿色便携，无需安装 |
+| 版本 | 发布目录 | EXE 大小 | 总大小 | 说明 | 适合场景 |
+|---|---|---|---|---|---|
+| **框架依赖 多文件** | `publish/v1.4.0/` | 0.64 MB | 5.39 MB | 14 文件，DLL 分开，依赖清晰 | 开发调试、二次打包 |
+| **框架依赖 单文件** ✅推荐 | `publish/v1.4.0-fd-single/` | **3.91 MB** | 4.72 MB | 单 EXE + 少量配置，打包 WebView2Loader | **日常分发、用户共享**，需系统安装 .NET 8 Desktop Runtime |
+| **自包含 单文件** | `publish/v1.4.0-sc-single/` | **74.7 MB** | 75.46 MB | 自带 .NET 8 Runtime，首次启动解压 | **离线 / 干净系统 / 免装运行时**，开箱即用 |
 
-> 💡 **关于 zip 版本**：当前的 zip 版本是绿色解压即用形态，**未来计划演化为标准安装版**（带安装向导、注册表关联、开始菜单快捷方式等）。现阶段为保持便携性，仍以 zip 形式分发。
+> 💡 **如何选？** 大多数情况下用「框架依赖 单文件」即可（~5MB）。Windows 11 22H2+ / Windows 10 21H2+ 基本都已预装 .NET 8 Desktop Runtime；如果目标环境完全不确定，选「自包含 单文件」。
 
 ### 启动方式
 
@@ -161,22 +177,24 @@ cd mini2nbrowser
 # 开发调试
 dotnet run --project mini2nbrowser\mini2nbrowser.csproj
 
-# 发布框架依赖版（单文件）
-dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release ^
-  -o publish\framework-dependent ^
+# 发布框架依赖 多文件（默认 publish）
+dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
+  --self-contained false -o publish\v1.4.0
+
+# 发布框架依赖 单文件（✅推荐日常分发）
+dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
+  --self-contained false ^
   -p:PublishSingleFile=true ^
   -p:IncludeNativeLibrariesForSelfExtract=true ^
-  --self-contained false
+  -o publish\v1.4.0-fd-single
 
-# 发布独立带运行时版（单文件 + 压缩 + ReadyToRun）
-dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release ^
-  -o publish\self-contained ^
-  -r win-x64 ^
+# 发布自包含 单文件（自带 .NET 8 Runtime，压缩）
+dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
+  --self-contained true ^
   -p:PublishSingleFile=true ^
-  -p:SelfContained=true ^
   -p:IncludeNativeLibrariesForSelfExtract=true ^
   -p:EnableCompressionInSingleFile=true ^
-  -p:PublishReadyToRun=true
+  -o publish\v1.4.0-sc-single
 ```
 
 ---
@@ -189,16 +207,30 @@ dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release ^
 | `Ctrl+W` | 关闭当前标签页 |
 | `Ctrl+D` | 添加/取消书签 |
 | `Ctrl+Shift+N` | 新建无痕标签页 |
+| `Ctrl+L` | 聚焦地址栏（可用关键字快速搜索） |
+
+### 地址栏关键字速查（v1.4 新增）
+
+| 关键字 | 引擎 | 示例 |
+|---|---|---|
+| `bd` | 百度 | `bd WPF 教程` |
+| `sg` / `sogou` | 搜狗 | `sg 天气` |
+| `360` | 360 搜索 | `360 mini2nbrowser` |
+| `tt` / `toutiao` | 头条搜索 | `tt AI 新闻` |
+| `gh` / `github` | GitHub 搜索 | `gh dotnet/wpf` |
+| `so` / `stackoverflow` | StackOverflow | `so webview2 focus issue` |
+| *(无)* | 默认引擎（出厂=必应，可自定义） | `anything` |
 
 ---
 
 ## 📁 数据存储
 
-所有用户数据按 profile 隔离，存储于 exe 同目录（或 `Profiles\<name>\` 子目录）：
+所有用户数据按 profile 隔离：
+- **浏览器数据**（历史/书签/密码/扩展/Cookie）存于 exe 同目录（或 `Profiles\<name>\` 子目录）
+- **全局配置**（主题/搜索引擎/防护开关）存于 `%AppData%\mini2nbrowser\config.json`，多 Profile 共享
 
 ```
 mini2nbrowser.exe
-├── config.json          # 配置（主题、搜索引擎、防护开关）
 ├── bookmarks.json       # 书签
 ├── history.json         # 历史记录（最多 500 条）
 ├── scripts.json         # 油猴脚本
@@ -209,6 +241,9 @@ mini2nbrowser.exe
 └── Profiles\            # 多 profile 数据
     ├── work\
     └── personal\
+
+%AppData%\mini2nbrowser\
+└── config.json          # 全局配置：主题 / 搜索引擎 / 防护开关（v1.4+ 迁移到此）
 ```
 
 ---
@@ -223,6 +258,36 @@ mini2nbrowser.exe
 ---
 
 ## 📝 版本历史
+
+### v1.4.0（最新，2026-08）
+- 🆕 **搜索引擎系统**
+  - 预置 7 个引擎：必应（默认）、百度、搜狗、360、头条搜索、GitHub、StackOverflow
+  - 地址栏关键字触发：`gh xxx` → GitHub、`bd xxx` → 百度、`so xxx` → StackOverflow 等
+  - 管理面板：新增 / 删除 / 编辑、一键切换默认引擎、支持 `Keyword` + `SearchUrl` + `SuggestUrl`
+  - 全局配置持久化到 `%AppData%\mini2nbrowser\config.json`，多 Profile 共享，旧配置自动迁移
+- 🆕 **PDF 批注侧边面板**
+  - 菜单项「打开本地 PDF...」或拖入窗口即可打开
+  - WPF 右侧浮动面板，**不遮挡 WebView2 原生 PDF 控件**（缩放/保存/旋转/分页）
+  - 高亮 6 色盘 + 文字 7 色盘，6 种批注工具（高亮/下划线/删除线/便签/自由划线/橡皮擦）
+  - 字号 + 线宽独立调节，撤销 / 全部清除 / 导出批注 / 一键打印
+- 🆕 **侧边栏 UI 全面优化**
+  - 折叠宽度 36 → 32 px，标签高度 32 → 28 px，按钮尺寸 32 → 28 px
+  - Grid 重排为 4 行结构，彻底修复标签重叠与按钮遮挡问题
+  - TextBlock 从 ControlTemplate 移至 Content 层，修复文字不显示/无法控制问题
+  - 新建标签按钮更紧凑，间距和图标全面缩小
+- 🐛 修复按钮重叠、标签遮挡、PDF 工具栏覆盖原生控件等 UI bug
+- 🐛 修复 C# JavaScript 字符串转义错误（`\"1\"` → `\"\"1\"\"`）
+
+### v1.3.0
+- 🆕 工具栏布局重构，新增 PDF 相关入口
+- 🆕 本地 PDF 文件打开支持（`BtnOpenPdf_Click`）
+- 🆕 地址栏智能搜索升级：关键词 + UrlEncode 双重适配
+- 🐛 修复搜索首页「默认引擎」下拉框
+
+### v1.2.0
+- 🆕 首页（新标签页）重构：默认引擎选择器 + 引擎关键字展示
+- 🆕 引擎编辑器浮层：新增 Keyword / SuggestUrl 等字段
+- 🐛 修复 TextBlock 在 ControlTemplate 内不可访问问题
 
 ### v1.1.0
 - 🆕 无痕浏览模式（`Ctrl+Shift+N`）

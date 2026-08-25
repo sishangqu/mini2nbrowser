@@ -97,6 +97,23 @@
             background: #14101e;
         }
 
+        body.bg-image {
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+        }
+        body.bg-image::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.25);
+            z-index: -1;
+        }
+        body.dark.bg-image::before {
+            background: rgba(0,0,0,0.45);
+        }
+
             body.dark .logo {
                 background: linear-gradient(135deg, #a78bfa, #ffffff);
                 -webkit-background-clip: text;
@@ -159,6 +176,13 @@
         'baidu':  'https://www.baidu.com/s?wd=',
         'google': 'https://www.google.com/search?q='
         };
+
+        var bg = params.get('bg');
+        if (bg) {
+            var bgUrl = bg.startsWith('file:') || bg.startsWith('http') ? bg : 'file:///' + bg.replace(/\\/g, '/');
+            document.body.style.backgroundImage = 'url("' + bgUrl + '")';
+            document.body.classList.add('bg-image');
+        }
 
         function doSearch(e) {
         e.preventDefault();

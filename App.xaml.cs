@@ -36,14 +36,14 @@ namespace mini2nbrowser
         /// <summary>当前实例的 Mutex 名（含 profile 后缀，多实例互不冲突）</summary>
         private static string MutexName =>
             string.IsNullOrEmpty(ProfileName)
-                ? "mini2nbrowser-Browser-v1.1.0-Unique"
-                : $"mini2nbrowser-Browser-v1.1.0-Profile-{ProfileName}";
+                ? "mini2nbrowser-Browser-v1.3.0-Unique"
+                : $"mini2nbrowser-Browser-v1.3.0-Profile-{ProfileName}";
 
         /// <summary>当前实例的管道名（含 profile 后缀）</summary>
         private static string PipeName =>
             string.IsNullOrEmpty(ProfileName)
-                ? "mini2nbrowser-restore-v1.1.0"
-                : $"mini2nbrowser-restore-v1.1.0-{ProfileName}";
+                ? "mini2nbrowser-restore-v1.3.0"
+                : $"mini2nbrowser-restore-v1.3.0-{ProfileName}";
 
         protected override void OnStartup(StartupEventArgs e)
         {
@@ -105,7 +105,7 @@ namespace mini2nbrowser
         }
 
         /// <summary>清理 profile 名中的非法字符，防止路径穿越</summary>
-        private static string SanitizeProfileName(string name)
+        public static string SanitizeProfileName(string name)
         {
             if (string.IsNullOrWhiteSpace(name)) return "";
             var invalid = Path.GetInvalidFileNameChars();
