@@ -313,6 +313,10 @@
                             <Separator/>
                             <MenuItem x:Name="menuForceDark" Header="强制暗色网页（当前标签）" IsCheckable="True" Click="MenuForceDark_Click"/>
                             <Separator/>
+                            <MenuItem Header="阅读模式（当前标签）" InputGestureText="Ctrl+Shift+R" Click="MenuReaderMode_Click"/>
+                            <MenuItem Header="画中画（当前页视频）" Click="MenuPictureInPicture_Click"/>
+                            <MenuItem Header="生成当前页二维码..." Click="MenuQrCode_Click"/>
+                            <Separator/>
                             <MenuItem Header="密码管理" Click="BtnPasswords_Click"/>
                             <MenuItem Header="扩展管理" Click="BtnExtensions_Click"/>
                             <Separator/>
@@ -789,6 +793,99 @@
                                  Padding="6,3" FontSize="13"
                                  KeyDown="FindInput_KeyDown"/>
                     </DockPanel>
+                </Border>
+                <!-- 阅读模式浮层（v1.9 新增）：全屏覆盖，提取正文纯文本阅读 -->
+                <Border x:Name="readerOverlay"
+                        Visibility="Collapsed" Panel.ZIndex="200"
+                        Background="{DynamicResource WindowBg}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Border Grid.Row="0" Background="{DynamicResource ToolbarBg}"
+                                Padding="16,10" BorderBrush="{DynamicResource BorderColor}"
+                                BorderThickness="0,0,0,1">
+                            <DockPanel>
+                                <Button x:Name="btnReaderClose" DockPanel.Dock="Right"
+                                        Width="28" Height="28" ToolTip="关闭阅读模式（Esc）"
+                                        Click="BtnReaderClose_Click"
+                                        Background="Transparent" BorderThickness="0">
+                                    <Path Width="12" Height="12" Stretch="Uniform"
+                                          Fill="{DynamicResource TextColor}"
+                                          Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                                </Button>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" Margin="0,0,8,0">
+                                    <Button x:Name="btnReaderFontMinus" Width="28" Height="28"
+                                            ToolTip="缩小字号" Click="BtnReaderFontMinus_Click"
+                                            Background="Transparent" BorderThickness="0"
+                                            Content="A-" FontSize="11"/>
+                                    <Button x:Name="btnReaderFontPlus" Width="28" Height="28" Margin="4,0,0,0"
+                                            ToolTip="放大字号" Click="BtnReaderFontPlus_Click"
+                                            Background="Transparent" BorderThickness="0"
+                                            Content="A+" FontSize="11"/>
+                                    <Button x:Name="btnReaderTheme" Width="28" Height="28" Margin="4,0,0,0"
+                                            ToolTip="切换阅读主题（浅/深/黄）" Click="BtnReaderTheme_Click"
+                                            Background="Transparent" BorderThickness="0"
+                                            Content="○" FontSize="14"/>
+                                </StackPanel>
+                                <TextBlock x:Name="readerTitle" DockPanel.Dock="Left"
+                                           VerticalAlignment="Center" FontSize="13"
+                                           Text="阅读模式" Foreground="{DynamicResource TextColor}"/>
+                            </DockPanel>
+                        </Border>
+                        <ScrollViewer Grid.Row="1" Padding="40,24" x:Name="readerScroll"
+                                      VerticalScrollBarVisibility="Auto">
+                            <StackPanel MaxWidth="760" HorizontalAlignment="Center">
+                                <TextBlock x:Name="readerHeadline" FontSize="26" FontWeight="Bold"
+                                           Foreground="{DynamicResource TextColor}"
+                                           TextWrapping="Wrap" Margin="0,0,0,10"/>
+                                <TextBlock x:Name="readerByline" FontSize="12" Opacity="0.6"
+                                           Foreground="{DynamicResource SecondaryText}"
+                                           Margin="0,0,0,24" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="readerContent" FontSize="17"
+                                           FontFamily="Segoe UI"
+                                           Foreground="{DynamicResource TextColor}"
+                                           TextWrapping="Wrap" LineHeight="28"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
+                <!-- 二维码弹窗（v1.9 新增）：居中遮罩 -->
+                <Border x:Name="qrOverlay" Visibility="Collapsed" Panel.ZIndex="300"
+                        Background="#80000000"
+                        HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+                    <Border Background="{DynamicResource ToolbarBg}"
+                            CornerRadius="12" Padding="20"
+                            Width="320" VerticalAlignment="Center" HorizontalAlignment="Center"
+                            BorderBrush="{DynamicResource BorderColor}" BorderThickness="1">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Button x:Name="btnQrClose" Grid.Row="0" Width="28" Height="28"
+                                    ToolTip="关闭" Click="BtnQrClose_Click"
+                                    Background="Transparent" BorderThickness="0"
+                                    HorizontalAlignment="Right" VerticalAlignment="Top"
+                                    Panel.ZIndex="10" Margin="0,-12,-12,0">
+                                <Path Width="12" Height="12" Stretch="Uniform"
+                                      Fill="{DynamicResource TextColor}"
+                                      Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                            </Button>
+                            <TextBlock Grid.Row="0" Text="当前页二维码" FontWeight="Medium"
+                                       FontSize="14" HorizontalAlignment="Center"
+                                       Foreground="{DynamicResource TextColor}" Margin="0,0,0,14"/>
+                            <Image x:Name="qrImage" Grid.Row="1" Stretch="Uniform" Width="240" Height="240"
+                                   HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="qrUrl" Grid.Row="2" TextWrapping="Wrap"
+                                       FontSize="10" Opacity="0.6" TextAlignment="Center"
+                                       Foreground="{DynamicResource SecondaryText}" Margin="0,12,0,0"
+                                       MaxHeight="48"/>
+                        </Grid>
+                    </Border>
                 </Border>
                 <!-- PDF 侧边批注面板：右侧浮层，WPF 原生实现，跟随窗口 -->
                 <Grid x:Name="pdfSidePanel" HorizontalAlignment="Right" VerticalAlignment="Stretch"

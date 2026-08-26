@@ -914,6 +914,13 @@ namespace mini2nbrowser
         #region 快捷键
         private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            // Esc：优先关闭浮层（v1.9 阅读模式 / 二维码 / 查找栏）
+            if (e.Key == Key.Escape)
+            {
+                if (qrOverlay.Visibility == Visibility.Visible) { BtnQrClose_Click(this, e); e.Handled = true; return; }
+                if (readerOverlay.Visibility == Visibility.Visible) { CloseReader(); e.Handled = true; return; }
+                if (findBar.Visibility == Visibility.Visible) { BtnFindClose_Click(this, e); e.Handled = true; return; }
+            }
             if (Keyboard.Modifiers == ModifierKeys.Control)
             {
                 if (e.Key == Key.W) { CloseCurrentTab(); e.Handled = true; }
@@ -925,6 +932,12 @@ namespace mini2nbrowser
             else if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && e.Key == Key.N)
             {
                 NewIncognitoTab();
+                e.Handled = true;
+            }
+            // Ctrl+Shift+R：阅读模式（v1.9）
+            else if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && e.Key == Key.R)
+            {
+                MenuReaderMode_Click(this, e);
                 e.Handled = true;
             }
             // F11 全屏切换（v1.8）
@@ -1129,6 +1142,254 @@ namespace mini2nbrowser
                 menuForceDark.IsChecked = enabled;
             }
             catch { }
+        }
+
+        // ===== v1.9.0：阅读模式 / 画中画 / 二维码 =====
+
+        // --- 阅读模式 ---
+        // 主题：0=跟随系统 1=浅色 2=深色 3=护眼黄
+        private int _readerTheme = 0;
+        private double _readerFontSize = 17;
+        private bool _readerActive = false;
+
+        // Readability 风格的正文提取脚本：按文本密度评分选最佳容器，提取标题/作者/段落
+        private const string ReaderExtractScript = @"
+            (function(){
+                function byDensity(){
+                    var best=null, bestScore=0;
+                    var nodes = document.querySelectorAll('article, div, section, main');
+                    nodes.forEach(function(n){
+                        var txt = (n.innerText || '').trim();
+                        if (txt.length < 200) return;
+                        var score = txt.length;
+                        score += n.querySelectorAll('p').length * 25;
+                        var linkText = 0;
+                        n.querySelectorAll('a').forEach(function(a){ linkText += (a.innerText||'').length; });
+                        if (txt.length > 0) score = score * (1 - linkText / txt.length);
+                        if (n.tagName === 'ARTICLE') score *= 1.5;
+                        var cls = (n.className || '').toLowerCase();
+                        if (/content|article|post|entry|main|body/.test(cls)) score *= 1.3;
+                        if (/sidebar|comment|footer|header|nav|menu|ad|promo|related/.test(cls)) score *= 0.5;
+                        if (score > bestScore) { bestScore = score; best = n; }
+                    });
+                    return best || document.body;
+                }
+                try {
+                    var node = document.querySelector('article') || byDensity() || document.body;
+                    var title = document.title || '';
+                    var byline = '';
+                    var metaA = document.querySelector('meta[name=""author""]');
+                    if (metaA) byline = metaA.getAttribute('content') || '';
+                    if (!byline) { var tm = node.querySelector('time'); if (tm) byline = tm.getAttribute('datetime') || tm.innerText || ''; }
+                    var paras = [];
+                    node.querySelectorAll('h1,h2,h3,p,li,blockquote,pre').forEach(function(el){
+                        var t = (el.innerText || '').trim();
+                        if (t.length < 2) return;
+                        var tag = el.tagName;
+                        if (tag === 'H1' || tag === 'H2' || tag === 'H3') paras.push('\n■ ' + t + '\n');
+                        else if (tag === 'LI') paras.push('  • ' + t);
+                        else if (tag === 'BLOCKQUOTE') paras.push('\n「' + t + '」\n');
+                        else if (tag === 'PRE') paras.push('\n' + t + '\n');
+                        else paras.push(t);
+                    });
+                    if (paras.length === 0) {
+                        var txt = (node.innerText || '').trim();
+                        paras = txt.split(/\n{2,}/).filter(function(s){ return s.trim().length > 0; });
+                    }
+                    return { title: title, byline: byline, text: paras.join('\n\n'), count: paras.length };
+                } catch(e) { return { title:'', byline:'', text:'', error: e.message }; }
+            })();";
+
+        private async void MenuReaderMode_Click(object sender, RoutedEventArgs e)
+        {
+            if (_readerActive) { CloseReader(); return; }
+            if (tabList.SelectedItem is not TabInfo tab) { MessageBox.Show("没有活动标签页。"); return; }
+            if (!_webViews.TryGetValue(tab.Id, out var wv) || wv.CoreWebView2 == null)
+            { MessageBox.Show("当前页面未就绪，请稍后再试。"); return; }
+
+            try
+            {
+                var res = await wv.CoreWebView2.ExecuteScriptAsync(ReaderExtractScript);
+                string title = "", byline = "", text = "";
+                int count = 0;
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(res);
+                    if (doc.RootElement.TryGetProperty("title", out var t)) title = t.GetString() ?? "";
+                    if (doc.RootElement.TryGetProperty("byline", out var b)) byline = b.GetString() ?? "";
+                    if (doc.RootElement.TryGetProperty("text", out var x)) text = x.GetString() ?? "";
+                    if (doc.RootElement.TryGetProperty("count", out var c)) count = c.GetInt32();
+                }
+                catch { }
+
+                if (string.IsNullOrWhiteSpace(text) || text.Length < 100)
+                {
+                    MessageBox.Show("未能从当前页面提取到足够正文。\n阅读模式适合新闻、博客、文章类网页。",
+                        "阅读模式", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                readerHeadline.Text = string.IsNullOrWhiteSpace(title) ? "（无标题）" : title;
+                readerByline.Text = byline;
+                readerContent.Text = text;
+                readerTitle.Text = $"阅读模式 · {count} 段";
+                ApplyReaderTheme();
+                readerOverlay.Visibility = Visibility.Visible;
+                _readerActive = true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("阅读模式失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ApplyReaderTheme()
+        {
+            // 0=跟随系统（用 DynamicResource），1=浅色，2=深色，3=护眼黄
+            Color bg, fg;
+            switch (_readerTheme)
+            {
+                case 1: bg = Color.FromRgb(0xFA, 0xFA, 0xFA); fg = Color.FromRgb(0x21, 0x21, 0x21); break;
+                case 2: bg = Color.FromRgb(0x1E, 0x1E, 0x1E); fg = Color.FromRgb(0xE0, 0xE0, 0xE0); break;
+                case 3: bg = Color.FromRgb(0xF5, 0xEC, 0xC8); fg = Color.FromRgb(0x33, 0x2B, 0x00); break;
+                default:
+                    // 跟随系统主题
+                    bg = _config.IsDarkMode ? Color.FromRgb(0x1E, 0x1E, 0x1E) : Color.FromRgb(0xFA, 0xFA, 0xFA);
+                    fg = _config.IsDarkMode ? Color.FromRgb(0xE0, 0xE0, 0xE0) : Color.FromRgb(0x21, 0x21, 0x21);
+                    break;
+            }
+            readerOverlay.Background = new SolidColorBrush(bg);
+            readerContent.Foreground = new SolidColorBrush(fg);
+            readerHeadline.Foreground = new SolidColorBrush(fg);
+            readerContent.FontSize = _readerFontSize;
+        }
+
+        private void BtnReaderClose_Click(object sender, RoutedEventArgs e) => CloseReader();
+
+        private void CloseReader()
+        {
+            readerOverlay.Visibility = Visibility.Collapsed;
+            _readerActive = false;
+        }
+
+        private void BtnReaderFontMinus_Click(object sender, RoutedEventArgs e)
+        {
+            if (_readerFontSize > 12) { _readerFontSize -= 1; readerContent.FontSize = _readerFontSize; }
+        }
+
+        private void BtnReaderFontPlus_Click(object sender, RoutedEventArgs e)
+        {
+            if (_readerFontSize < 28) { _readerFontSize += 1; readerContent.FontSize = _readerFontSize; }
+        }
+
+        private void BtnReaderTheme_Click(object sender, RoutedEventArgs e)
+        {
+            _readerTheme = (_readerTheme + 1) % 4;
+            ApplyReaderTheme();
+        }
+
+        // --- 画中画 ---
+        // 利用 HTML5 requestPictureInPicture API：选最大视频浮窗显示，再次调用退出
+        private const string PipScript = @"
+            (function(){
+                try {
+                    if (document.pictureInPictureElement) {
+                        document.exitPictureInPicture().catch(function(){});
+                        return { action: 'exited' };
+                    }
+                    if (!('pictureInPictureEnabled' in document) || !document.pictureInPictureEnabled)
+                        return { error: '当前浏览器不支持画中画。' };
+                    var videos = Array.prototype.slice.call(document.querySelectorAll('video'));
+                    videos = videos.filter(function(v){ return v.readyState >= 1 || v.src; });
+                    if (videos.length === 0) return { error: '当前页未检测到可播放视频。' };
+                    var v = videos[0];
+                    for (var i = 1; i < videos.length; i++) {
+                        if ((videos[i].videoWidth || 0) > (v.videoWidth || 0)) v = videos[i];
+                    }
+                    var p = v.play();
+                    if (p && p.catch) p.catch(function(){});
+                    return v.requestPictureInPicture().then(function(){
+                        return { action: 'requested', w: v.videoWidth, h: v.videoHeight };
+                    }).catch(function(e){
+                        return { error: '画中画请求失败：' + (e && e.message || e) };
+                    });
+                } catch(e) { return { error: e.message }; }
+            })();";
+
+        private async void MenuPictureInPicture_Click(object sender, RoutedEventArgs e)
+        {
+            if (tabList.SelectedItem is not TabInfo tab) { MessageBox.Show("没有活动标签页。"); return; }
+            if (!_webViews.TryGetValue(tab.Id, out var wv) || wv.CoreWebView2 == null)
+            { MessageBox.Show("当前页面未就绪。"); return; }
+
+            try
+            {
+                // requestPictureInPicture 返回 Promise，ExecuteScriptAsync 会拿到 Promise 的结果
+                var res = await wv.CoreWebView2.ExecuteScriptAsync(PipScript);
+                string action = "", error = "";
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(res);
+                    if (doc.RootElement.TryGetProperty("error", out var er)) error = er.GetString() ?? "";
+                    if (doc.RootElement.TryGetProperty("action", out var a)) action = a.GetString() ?? "";
+                }
+                catch { }
+
+                if (!string.IsNullOrEmpty(error))
+                    MessageBox.Show(error, "画中画", MessageBoxButton.OK, MessageBoxImage.Warning);
+                // 成功时不弹窗：画中画窗口的出现/消失即视觉反馈
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("画中画失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // --- 二维码生成 ---
+        // 用 QRCoder 纯 C# 库生成当前页 URL 的 PNG，方便手机扫码访问
+        private async void MenuQrCode_Click(object sender, RoutedEventArgs e)
+        {
+            if (tabList.SelectedItem is not TabInfo tab) { MessageBox.Show("没有活动标签页。"); return; }
+            if (!_webViews.TryGetValue(tab.Id, out var wv) || wv.CoreWebView2 == null)
+            { MessageBox.Show("当前页面未就绪。"); return; }
+            var url = wv.Source?.ToString() ?? "";
+            if (string.IsNullOrWhiteSpace(url) || url == "about:blank")
+            { MessageBox.Show("当前页没有有效 URL。"); return; }
+
+            try
+            {
+                // 在后台生成 QR，避免大字符串阻塞 UI
+                var pngBytes = await Task.Run(() =>
+                {
+                    using var gen = new QRCoder.QRCodeGenerator();
+                    var data = gen.CreateQrCode(url, QRCoder.QRCodeGenerator.ECCLevel.M);
+                    var png = new QRCoder.PngByteQRCode(data);
+                    return png.GetGraphic(8);
+                });
+
+                var bmp = new BitmapImage();
+                using (var ms = new MemoryStream(pngBytes))
+                {
+                    bmp.BeginInit();
+                    bmp.CacheOption = BitmapCacheOption.OnLoad;
+                    bmp.StreamSource = ms;
+                    bmp.EndInit();
+                }
+                bmp.Freeze();
+                qrImage.Source = bmp;
+                qrUrl.Text = url;
+                qrOverlay.Visibility = Visibility.Visible;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("二维码生成失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void BtnQrClose_Click(object sender, RoutedEventArgs e)
+        {
+            qrOverlay.Visibility = Visibility.Collapsed;
+            qrImage.Source = null;
         }
 
         // ===== 鼠标手势（v1.7 新增）=====
