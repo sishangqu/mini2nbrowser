@@ -699,6 +699,9 @@ namespace mini2nbrowser
             Loaded += MainWindow_Loaded;
             Closing += MainWindow_Closing;
             PreviewKeyDown += MainWindow_PreviewKeyDown;
+            // 鼠标手势（v1.7）：右键拖动 4 方向，松开时判定
+            PreviewMouseRightButtonDown += MainWindow_PreviewMouseRightButtonDown;
+            PreviewMouseRightButtonUp += MainWindow_PreviewMouseRightButtonUp;
 
             _memoryTimer = new System.Timers.Timer(30000);
             _memoryTimer.Elapsed += (s, e) => CleanMemory();
@@ -923,6 +926,88 @@ namespace mini2nbrowser
                 NewIncognitoTab();
                 e.Handled = true;
             }
+        }
+
+        // ===== 鼠标手势（v1.7 新增）=====
+        // 仅在 WebView 区域生效；右键拖动距离 > 阈值触发手势，并抑制网页默认菜单。
+        // 方向：↑ 滚动到顶 / ↓ 滚动到底 / ← 后退 / → 前进
+        private const double GestureThreshold = 30.0;
+        private Point? _gestureStart;
+
+        private void MainWindow_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            _gestureStart = e.GetPosition(this);
+        }
+
+        private void MainWindow_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_gestureStart == null) { return; }
+            var start = _gestureStart.Value;
+            _gestureStart = null;
+            var end = e.GetPosition(this);
+            var dx = end.X - start.X;
+            var dy = end.Y - start.Y;
+            var dist = Math.Sqrt(dx * dx + dy * dy);
+
+            // 距离不足：视为普通右键，不阻止默认菜单
+            if (dist < GestureThreshold) return;
+
+            // 仅当原 PreviewMouseRightButtonDown 的源是 WebView2 时启用手势
+            if (e.OriginalSource is not Microsoft.Web.WebView2.Wpf.WebView2 &&
+                !IsAncestorWebView(e.OriginalSource))
+            {
+                return;
+            }
+
+            // 判定方向（取主轴）
+            string dir;
+            if (Math.Abs(dx) > Math.Abs(dy))
+                dir = dx > 0 ? "Right" : "Left";
+            else
+                dir = dy > 0 ? "Down" : "Up";
+
+            // 阻止网页默认右键菜单
+            e.Handled = true;
+            ExecuteGesture(dir);
+        }
+
+        private static bool IsAncestorWebView(object src)
+        {
+            // 沿视觉树向上找 WebView2（WPF 事件源可能是内部子元素）
+            var dep = src as System.Windows.DependencyObject;
+            while (dep != null)
+            {
+                if (dep is Microsoft.Web.WebView2.Wpf.WebView2) return true;
+                dep = System.Windows.Media.VisualTreeHelper.GetParent(dep);
+            }
+            return false;
+        }
+
+        private void ExecuteGesture(string dir)
+        {
+            try
+            {
+                if (tabList.SelectedItem is not TabInfo tab) return;
+                if (!_webViews.TryGetValue(tab.Id, out var wv) || wv.CoreWebView2 == null) return;
+
+                switch (dir)
+                {
+                    case "Left":  // 后退
+                        if (wv.CoreWebView2.CanGoBack) wv.CoreWebView2.GoBack();
+                        break;
+                    case "Right": // 前进
+                        if (wv.CoreWebView2.CanGoForward) wv.CoreWebView2.GoForward();
+                        break;
+                    case "Up":    // 滚动到页首
+                        _ = wv.CoreWebView2.ExecuteScriptAsync("window.scrollTo({top:0,left:0,behavior:'smooth'});");
+                        break;
+                    case "Down":  // 滚动到页底
+                        _ = wv.CoreWebView2.ExecuteScriptAsync(
+                            "window.scrollTo({top:document.body.scrollHeight,left:0,behavior:'smooth'});");
+                        break;
+                }
+            }
+            catch { /* 静默失败，不打扰用户 */ }
         }
         #endregion
 
@@ -3560,6 +3645,60 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                     tab.Title = System.IO.Path.GetFileName(fullPath);
                     tab.IsPdf = true;
                 }
+            }
+        }
+
+        /// <summary>网页截图：捕获 WebView2 当前可视区域为 PNG（v1.7 新增）</summary>
+        private async void BtnCapturePage_Click(object sender, RoutedEventArgs e)
+        {
+            if (tabList.SelectedItem is not TabInfo tab) { MessageBox.Show("没有活动标签页。"); return; }
+            if (!_webViews.TryGetValue(tab.Id, out var wv) || wv.CoreWebView2 == null)
+            { MessageBox.Show("当前页面未就绪，请稍后再试。"); return; }
+
+            // 默认文件名 = 页面标题（去除非法字符）+ 时间戳
+            var safeTitle = string.Join("_", tab.Title.Split(System.IO.Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries)).Trim();
+            if (string.IsNullOrWhiteSpace(safeTitle)) safeTitle = "page";
+            var baseName = $"{safeTitle}_{DateTime.Now:yyyyMMdd_HHmmss}";
+
+            var sfd = new Microsoft.Win32.SaveFileDialog
+            {
+                FileName = baseName + ".png",
+                Filter = "PNG 图像 (*.png)|*.png|所有文件 (*.*)|*.*",
+                Title = "保存网页截图"
+            };
+            if (sfd.ShowDialog() != true) return;
+
+            try
+            {
+                using var ms = new System.IO.MemoryStream();
+                await wv.CoreWebView2.CapturePreviewAsync(
+                    Microsoft.Web.WebView2.Core.CoreWebView2CapturePreviewImageFormat.Png, ms);
+                await System.IO.File.WriteAllBytesAsync(sfd.FileName, ms.ToArray());
+                MessageBox.Show($"截图已保存到：\n{sfd.FileName}", "完成", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("截图失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>静音/取消静音当前标签页（v1.7 新增）</summary>
+        private void MenuItemMuteTab_Click(object sender, RoutedEventArgs e)
+        {
+            if (tabList.SelectedItem is not TabInfo tab) return;
+            if (!_webViews.TryGetValue(tab.Id, out var wv) || wv.CoreWebView2 == null)
+            { MessageBox.Show("当前页面未就绪。"); return; }
+
+            try
+            {
+                // WebView2 原生 IsMuted 属性：一键切换所有媒体音量
+                wv.CoreWebView2.IsMuted = !wv.CoreWebView2.IsMuted;
+                MessageBox.Show(wv.CoreWebView2.IsMuted ? "已静音此标签" : "已取消静音",
+                    "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("切换静音失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
         #endregion

@@ -308,6 +308,7 @@
                             <MenuItem Header="新建无痕标签页" InputGestureText="Ctrl+Shift+N" Click="BtnIncognito_Click"/>
                             <Separator/>
                             <MenuItem Header="打开本地 PDF..." Click="BtnOpenPdf_Click"/>
+                            <MenuItem Header="网页截图（整页）..." Click="BtnCapturePage_Click"/>
                             <MenuItem Header="密码管理" Click="BtnPasswords_Click"/>
                             <MenuItem Header="扩展管理" Click="BtnExtensions_Click"/>
                             <Separator/>
@@ -487,6 +488,7 @@
                             <MenuItem Header="冻结此标签" Click="MenuItemFreezeTab_Click"/>
                             <MenuItem Header="关闭分组内所有标签" Click="MenuItemCloseGroup_Click"/>
                             <Separator/>
+                            <MenuItem Header="静音/取消静音此标签" Click="MenuItemMuteTab_Click"/>
                             <MenuItem Header="复制标签 URL" Click="MenuItemCopyTabUrl_Click"/>
                         </ContextMenu>
                     </ListBox.ContextMenu>
