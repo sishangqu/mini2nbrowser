@@ -260,7 +260,23 @@ public class MediaSniffer
     public void Remove(MediaItem item)
     {
         lock (_lock) _seen.Remove(item.Url);
-        _items.Remove(item);
+        // v1.9.1：ObservableCollection 只能在 UI 线程修改
+        try
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher != null && !dispatcher.CheckAccess())
+            {
+                dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try { _items.Remove(item); } catch { }
+                }));
+            }
+            else
+            {
+                _items.Remove(item);
+            }
+        }
+        catch { }
     }
 }
 

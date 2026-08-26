@@ -2,9 +2,11 @@ using System;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Threading;
 
 namespace mini2nbrowser
 {
@@ -14,13 +16,13 @@ namespace mini2nbrowser
         private CancellationTokenSource? _pipeCts;
         private bool _ownsMutex;
 
-        /// <summary>当前实例的 profile 名（空表示默认实例）</summary>
+        private static string CrashLogPath =>
+            Path.Combine(DataDir, "crash.log");
+
         public static string ProfileName { get; private set; } = "";
 
-        /// <summary>当前实例的数据根目录（默认=exe 实际所在目录，多 profile 时=exe 目录下 Profiles\&lt;name&gt;）</summary>
         public static string DataDir { get; private set; } = GetExeDirectory();
 
-        /// <summary>获取 exe 实际所在目录（单文件发布时 AppContext.BaseDirectory 是临时解压目录，必须用 ProcessPath）</summary>
         private static string GetExeDirectory()
         {
             try
@@ -33,13 +35,11 @@ namespace mini2nbrowser
             return AppContext.BaseDirectory;
         }
 
-        /// <summary>当前实例的 Mutex 名（含 profile 后缀，多实例互不冲突）</summary>
         private static string MutexName =>
             string.IsNullOrEmpty(ProfileName)
                 ? "mini2nbrowser-Browser-v1.3.0-Unique"
                 : $"mini2nbrowser-Browser-v1.3.0-Profile-{ProfileName}";
 
-        /// <summary>当前实例的管道名（含 profile 后缀）</summary>
         private static string PipeName =>
             string.IsNullOrEmpty(ProfileName)
                 ? "mini2nbrowser-restore-v1.3.0"
@@ -47,24 +47,40 @@ namespace mini2nbrowser
 
         protected override void OnStartup(StartupEventArgs e)
         {
-            // 解析命令行参数：--profile <name> 启动独立实例（独立数据目录、独立托盘）
+            DispatcherUnhandledException += OnDispatcherUnhandledException;
+            AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
+            TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+
+            try
+            {
+                StartupCore(e);
+            }
+            catch (Exception ex)
+            {
+                LogCrash("OnStartup", ex);
+                MessageBox.Show(
+                    $"mini2n Browser 启动失败：\n{ex.Message}\n\n详情已写入：{CrashLogPath}",
+                    "启动错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                Environment.Exit(-1);
+            }
+        }
+
+        private void StartupCore(StartupEventArgs e)
+        {
             ParseArgs(e.Args);
 
-            // 单实例互斥检测（每个 profile 独立互斥，不同 profile 可并存）
+            try { Directory.CreateDirectory(DataDir); } catch { }
+
             _appMutex = new Mutex(true, MutexName, out bool createdNew);
             _ownsMutex = createdNew;
 
             if (!createdNew)
             {
-                // 已有同 profile 实例在运行 → 通过命名管道通知已有窗口热启动
                 SignalRestore();
-                // 关键修复：用 Environment.Exit 立即终止进程，避免 WPF 继续 base.OnStartup
-                // 通过 StartupUri 创建第二个主窗口和托盘图标
                 Environment.Exit(0);
                 return;
             }
 
-            // 启动优化：ProfileOptimization 记录热点方法，下次启动并行编译
             try
             {
                 ProfileOptimization.SetProfileRoot(DataDir);
@@ -72,21 +88,91 @@ namespace mini2nbrowser
             }
             catch { }
 
-            // 启动阶段低延迟 GC，减少 Full GC 阻塞 UI
             try { GCSettings.LatencyMode = GCLatencyMode.LowLatency; } catch { }
 
-            // 启动命名管道服务器，监听后续实例的唤醒请求
             StartPipeServer();
 
             base.OnStartup(e);
 
-            // 显式创建主窗口（移除了 StartupUri，避免新实例也走窗口创建路径）
             var mw = new MainWindow(DataDir, ProfileName);
             MainWindow = mw;
             mw.Show();
         }
 
-        /// <summary>解析命令行参数，确定 profile 名和数据目录</summary>
+        private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+        {
+            LogCrash("UI线程", e.Exception);
+            if (IsRecoverable(e.Exception))
+            {
+                e.Handled = true;
+            }
+        }
+
+        private void OnAppDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            if (e.ExceptionObject is Exception ex)
+                LogCrash("非UI线程(致命)", ex);
+            else
+                LogCrash("非UI线程(致命)", new Exception(e.ExceptionObject?.ToString() ?? "unknown"));
+        }
+
+        private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            LogCrash("Task未观察", e.Exception);
+            e.SetObserved();
+        }
+
+        private static bool IsRecoverable(Exception ex)
+        {
+            if (ex is System.Runtime.InteropServices.COMException) return true;
+            if (ex is System.Runtime.InteropServices.InvalidComObjectException) return true;
+            if (ex is ObjectDisposedException) return true;
+            if (ex is IOException) return true;
+            if (ex is InvalidOperationException ioex && ioex.Message.Contains("modified", StringComparison.OrdinalIgnoreCase)) return true;
+            if (ex is NullReferenceException) return true;
+            if (ex.InnerException != null) return IsRecoverable(ex.InnerException);
+            return false;
+        }
+
+        private static void LogCrash(string context, Exception ex)
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine($"=== [{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {context} ===");
+                sb.AppendLine($"Type: {ex.GetType().FullName}");
+                sb.AppendLine($"Message: {ex.Message}");
+                sb.AppendLine($"StackTrace:\n{ex.StackTrace}");
+                if (ex.InnerException != null)
+                {
+                    sb.AppendLine("--- InnerException ---");
+                    sb.AppendLine($"Type: {ex.InnerException.GetType().FullName}");
+                    sb.AppendLine($"Message: {ex.InnerException.Message}");
+                    sb.AppendLine($"StackTrace:\n{ex.InnerException.StackTrace}");
+                }
+                sb.AppendLine();
+
+                var dir = Path.GetDirectoryName(CrashLogPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+
+                var logPath = CrashLogPath;
+                try
+                {
+                    if (File.Exists(logPath) && new FileInfo(logPath).Length > 2 * 1024 * 1024)
+                    {
+                        var oldPath = logPath + ".old";
+                        try { if (File.Exists(oldPath)) File.Delete(oldPath); } catch { }
+                        try { File.Move(logPath, oldPath); } catch { }
+                    }
+                }
+                catch { }
+
+                File.AppendAllText(logPath, sb.ToString(), Encoding.UTF8);
+            }
+            catch { }
+        }
+
         private static void ParseArgs(string[] args)
         {
             for (int i = 0; i < args.Length; i++)
@@ -104,18 +190,16 @@ namespace mini2nbrowser
             }
         }
 
-        /// <summary>清理 profile 名中的非法字符，防止路径穿越</summary>
         public static string SanitizeProfileName(string name)
         {
             if (string.IsNullOrWhiteSpace(name)) return "";
             var invalid = Path.GetInvalidFileNameChars();
-            var sb = new System.Text.StringBuilder();
+            var sb = new StringBuilder();
             foreach (var c in name.Trim())
             {
                 sb.Append(Array.IndexOf(invalid, c) >= 0 ? '_' : c);
             }
             var result = sb.ToString();
-            // 防止穿越：禁止 . 和 ..
             if (result == "." || result == "..") return "";
             return result;
         }
@@ -124,7 +208,6 @@ namespace mini2nbrowser
         {
             _pipeCts?.Cancel();
             try { GCSettings.LatencyMode = GCLatencyMode.Interactive; } catch { }
-            // 仅在真正拥有 Mutex 所有权时才释放（否则 ReleaseMutex 会抛 ApplicationException）
             if (_ownsMutex)
             {
                 try { _appMutex?.ReleaseMutex(); } catch { }
@@ -133,7 +216,6 @@ namespace mini2nbrowser
             base.OnExit(e);
         }
 
-        /// <summary>命名管道服务器：监听新实例发来的唤醒请求</summary>
         private void StartPipeServer()
         {
             _pipeCts = new CancellationTokenSource();
@@ -142,36 +224,45 @@ namespace mini2nbrowser
             {
                 while (!token.IsCancellationRequested)
                 {
+                    NamedPipeServerStream? server = null;
                     try
                     {
-                        using var server = new NamedPipeServerStream(PipeName, PipeDirection.InOut, 1,
+                        server = new NamedPipeServerStream(PipeName, PipeDirection.InOut, 1,
                             PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
                         await server.WaitForConnectionAsync(token);
-                        using var reader = new StreamReader(server, leaveOpen: true);
+                        using var reader = new StreamReader(server, Encoding.UTF8, leaveOpen: true);
                         var msg = await reader.ReadLineAsync(token);
                         if (msg == "restore")
                         {
-                            Dispatcher.Invoke(() =>
+                            await Dispatcher.InvokeAsync(() =>
                             {
-                                if (MainWindow is MainWindow mw)
-                                    mw.RestoreFromTray();
+                                try
+                                {
+                                    if (MainWindow is MainWindow mw && mw != null)
+                                        mw.RestoreFromTray();
+                                }
+                                catch { }
                             });
                         }
                     }
                     catch (OperationCanceledException) { break; }
-                    catch { await Task.Delay(500); }
+                    catch (IOException) { await Task.Delay(200, token); }
+                    catch { await Task.Delay(500, token); }
+                    finally
+                    {
+                        try { server?.Dispose(); } catch { }
+                    }
                 }
             }, token);
         }
 
-        /// <summary>新实例向已有实例发送唤醒信号</summary>
         private static void SignalRestore()
         {
             try
             {
                 using var client = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.None);
                 client.Connect(2000);
-                using var writer = new StreamWriter(client, leaveOpen: true);
+                using var writer = new StreamWriter(client, Encoding.UTF8, leaveOpen: true);
                 writer.WriteLine("restore");
                 writer.Flush();
             }

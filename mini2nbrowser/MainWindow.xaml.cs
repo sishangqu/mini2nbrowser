@@ -469,6 +469,7 @@ namespace mini2nbrowser
         // 系统托盘
         private Hardcodet.Wpf.TaskbarNotification.TaskbarIcon? _trayIcon;
         private bool _isClosingFromTray;
+        private volatile bool _isShuttingDown;
 
         private const double SidebarCollapsed = 32;
         private const double SidebarExpanded = 170;
@@ -678,7 +679,9 @@ namespace mini2nbrowser
             lbMedia.ItemsSource = _mediaSniffer.Items;
             SuggestListBox.ItemsSource = _suggestItems;
             _mediaSniffer.Items.CollectionChanged += (s, e) =>
-                Dispatcher.Invoke(() => mediaCountText.Text = _mediaSniffer.Items.Count > 0 ? $"({_mediaSniffer.Items.Count})" : "");
+            {
+                try { Dispatcher.BeginInvoke(new Action(() => { if (!_isShuttingDown && mediaCountText != null) mediaCountText.Text = _mediaSniffer.Items.Count > 0 ? $"({_mediaSniffer.Items.Count})" : ""; })); } catch { }
+            };
 
             ApplyTheme();
             if (_chkDarkMode != null) _chkDarkMode.IsChecked = _config.IsDarkMode;
@@ -704,12 +707,20 @@ namespace mini2nbrowser
             PreviewMouseRightButtonUp += MainWindow_PreviewMouseRightButtonUp;
 
             _memoryTimer = new System.Timers.Timer(30000);
-            _memoryTimer.Elapsed += (s, e) => CleanMemory();
+            _memoryTimer.Elapsed += (s, e) =>
+            {
+                if (_isShuttingDown) return;
+                try { Dispatcher.BeginInvoke(new Action(CleanMemory)); } catch { }
+            };
             _memoryTimer.Start();
 
             // 标签冻结定时器（每2分钟检查一次闲置标签）
             _freezeTimer = new System.Timers.Timer(120000);
-            _freezeTimer.Elapsed += (s, e) => CheckAndFreezeIdleTabs();
+            _freezeTimer.Elapsed += (s, e) =>
+            {
+                if (_isShuttingDown) return;
+                try { CheckAndFreezeIdleTabs(); } catch { }
+            };
             _freezeTimer.Start();
 
             // 初始化扩展管理器（必须在首个标签页创建之前完成，否则扩展不会被加载）
@@ -828,7 +839,11 @@ namespace mini2nbrowser
                 // 最小化到托盘：隐藏窗口，进程驻留后台，WebView2 全部保活
                 Hide();
                 // 延迟回收内存，释放工作集
-                _ = Task.Delay(500).ContinueWith(_ => Dispatcher.Invoke(CleanMemory));
+                _ = Task.Delay(500).ContinueWith(_ =>
+                {
+                    if (_isShuttingDown) return;
+                    try { Dispatcher.BeginInvoke(new Action(CleanMemory)); } catch { }
+                });
             }
             else
             {
@@ -870,15 +885,52 @@ namespace mini2nbrowser
             if (!_isClosingFromTray)
             {
                 e.Cancel = true;
-                WindowState = WindowState.Minimized;
-                Hide();
+                try { WindowState = WindowState.Minimized; } catch { }
+                try { Hide(); } catch { }
             }
             else
             {
-                // 托盘菜单"完全退出"：真正释放资源
-                _trayIcon?.Dispose();
-                _memoryTimer?.Stop();
-                _memoryTimer?.Dispose();
+                // v1.9.1：托盘菜单"完全退出"——安全释放所有资源，避免后台线程/定时器崩溃
+                _isShuttingDown = true;
+                try
+                {
+                    _memoryTimer?.Stop();
+                    _memoryTimer?.Dispose();
+                    _freezeTimer?.Stop();
+                    _freezeTimer?.Dispose();
+
+                    // 取消所有进行中的媒体下载
+                    try
+                    {
+                        lock (_mediaDownloadCts)
+                        {
+                            foreach (var cts in _mediaDownloadCts.Values)
+                                try { cts.Cancel(); } catch { }
+                            _mediaDownloadCts.Clear();
+                        }
+                    }
+                    catch { }
+
+                    // 安全释放所有 WebView2 实例：先隐藏再移除再 Dispose，避免访问已释放控件
+                    foreach (var wv in _webViews.Values.ToList())
+                    {
+                        try { wv.Visibility = Visibility.Collapsed; } catch { }
+                    }
+                    try
+                    {
+                        webViewContainer.Children.Clear();
+                    }
+                    catch { }
+                    foreach (var wv in _webViews.Values.ToList())
+                    {
+                        try { wv.Dispose(); } catch { }
+                    }
+                    _webViews.Clear();
+                    _tabs.Clear();
+                }
+                catch { }
+
+                try { _trayIcon?.Dispose(); } catch { }
             }
         }
 
@@ -1782,8 +1834,8 @@ namespace mini2nbrowser
                     {
                         e.Response = wv.CoreWebView2.Environment.CreateWebResourceResponse(null, 204, "No Content", "");
                         _config.BlockCount++;
-                        if (_txtBlockCount != null)
-                            Dispatcher.Invoke(() => _txtBlockCount.Text = _config.BlockCount.ToString());
+                        if (_txtBlockCount != null && !_isShuttingDown)
+                            try { Dispatcher.BeginInvoke(new Action(() => { try { _txtBlockCount.Text = _config.BlockCount.ToString(); } catch { } })); } catch { }
                     }
                 }
                 catch { }
@@ -1832,12 +1884,14 @@ namespace mini2nbrowser
         #region 内存管理
         private void CleanMemory()
         {
+            if (_isShuttingDown) return;
             if (!_config.AutoMemoryOptimize) return;
             try
             {
+                bool minimized = false;
+                try { minimized = WindowState == WindowState.Minimized; } catch { }
                 var proc = System.Diagnostics.Process.GetCurrentProcess();
                 long memMB = proc.WorkingSet64 / 1024 / 1024;
-                bool minimized = WindowState == WindowState.Minimized;
                 // 最小化时阈值减半，更激进回收；正常时仅超阈值才回收
                 long threshold = minimized ? _config.MemoryThreshold / 2 : _config.MemoryThreshold;
                 if (memMB > threshold || minimized)
@@ -1845,7 +1899,7 @@ namespace mini2nbrowser
                     GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, false, true);
                     GC.WaitForPendingFinalizers();
                     GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, false, true);
-                    SetProcessWorkingSetSize(proc.Handle, -1, -1);
+                    try { SetProcessWorkingSetSize(proc.Handle, -1, -1); } catch { }
                 }
             }
             catch { }
@@ -2013,73 +2067,91 @@ namespace mini2nbrowser
         {
             wv.CoreWebView2.DownloadStarting += (s, e) =>
             {
+                if (_isShuttingDown) { e.Cancel = true; return; }
                 var deferral = e.GetDeferral();
-                Dispatcher.Invoke(() =>
+                try
                 {
-                    try
+                    Dispatcher.Invoke(() =>
                     {
-                        var sfd = new Microsoft.Win32.SaveFileDialog { FileName = e.ResultFilePath };
-                        if (sfd.ShowDialog() == true)
+                        try
                         {
-                            e.ResultFilePath = sfd.FileName;
-                            var item = new DownloadItem { FileName = Path.GetFileName(sfd.FileName), FilePath = sfd.FileName };
-                            _downloads.Insert(0, item);
-                            // 下载开始时自动关闭浮窗，通过角标提示正在下载
-                            downloadsOverlay.Visibility = Visibility.Collapsed;
-                            _activeDownloads++;
-                            UpdateDownloadBadge();
-
-                            long lastBytes = 0;
-                            DateTime lastTime = DateTime.Now;
-
-                            e.DownloadOperation.BytesReceivedChanged += (s2, e2) =>
+                            if (_isShuttingDown) { e.Cancel = true; return; }
+                            var sfd = new Microsoft.Win32.SaveFileDialog { FileName = e.ResultFilePath };
+                            if (sfd.ShowDialog() == true)
                             {
-                                Dispatcher.Invoke(() =>
-                                {
-                                    item.BytesReceived = e.DownloadOperation.BytesReceived;
-                                    if (e.DownloadOperation.TotalBytesToReceive.HasValue)
-                                        item.TotalBytes = (long)e.DownloadOperation.TotalBytesToReceive.Value;
+                                e.ResultFilePath = sfd.FileName;
+                                var item = new DownloadItem { FileName = Path.GetFileName(sfd.FileName), FilePath = sfd.FileName };
+                                _downloads.Insert(0, item);
+                                // 下载开始时自动关闭浮窗，通过角标提示正在下载
+                                downloadsOverlay.Visibility = Visibility.Collapsed;
+                                _activeDownloads++;
+                                UpdateDownloadBadge();
 
-                                    var now = DateTime.Now;
-                                    var elapsed = (now - lastTime).TotalSeconds;
-                                    if (elapsed >= 0.5)
-                                    {
-                                        item.Speed = (e.DownloadOperation.BytesReceived - lastBytes) / elapsed;
-                                        lastBytes = e.DownloadOperation.BytesReceived;
-                                        lastTime = now;
-                                    }
+                                long lastBytes = 0;
+                                DateTime lastTime = DateTime.Now;
 
-                                    if (e.DownloadOperation.TotalBytesToReceive.HasValue &&
-                                        e.DownloadOperation.TotalBytesToReceive.Value > 0)
-                                        item.Progress = (double)e.DownloadOperation.BytesReceived /
-                                            e.DownloadOperation.TotalBytesToReceive.Value * 100;
-                                });
-                            };
-                            e.DownloadOperation.StateChanged += (s2, e2) =>
-                            {
-                                Dispatcher.Invoke(() =>
+                                e.DownloadOperation.BytesReceivedChanged += (s2, e2) =>
                                 {
-                                    item.Status = e.DownloadOperation.State switch
+                                    if (_isShuttingDown) return;
+                                    // v1.9.1：高频事件用 BeginInvoke 避免阻塞下载线程
+                                    try { Dispatcher.BeginInvoke(new Action(() =>
                                     {
-                                        CoreWebView2DownloadState.Completed => "已完成",
-                                        CoreWebView2DownloadState.Interrupted => "已中断",
-                                        _ => "下载中"
-                                    };
-                                    if (item.Status == "已完成" || item.Status == "已中断")
+                                        try
+                                        {
+                                            item.BytesReceived = e.DownloadOperation.BytesReceived;
+                                            if (e.DownloadOperation.TotalBytesToReceive.HasValue)
+                                                item.TotalBytes = (long)e.DownloadOperation.TotalBytesToReceive.Value;
+
+                                            var now = DateTime.Now;
+                                            var elapsed = (now - lastTime).TotalSeconds;
+                                            if (elapsed >= 0.5)
+                                            {
+                                                item.Speed = (e.DownloadOperation.BytesReceived - lastBytes) / elapsed;
+                                                lastBytes = e.DownloadOperation.BytesReceived;
+                                                lastTime = now;
+                                            }
+
+                                            if (e.DownloadOperation.TotalBytesToReceive.HasValue &&
+                                                e.DownloadOperation.TotalBytesToReceive.Value > 0)
+                                                item.Progress = (double)e.DownloadOperation.BytesReceived /
+                                                    e.DownloadOperation.TotalBytesToReceive.Value * 100;
+                                        }
+                                        catch { }
+                                    })); } catch { }
+                                };
+                                e.DownloadOperation.StateChanged += (s2, e2) =>
+                                {
+                                    if (_isShuttingDown) return;
+                                    try { Dispatcher.BeginInvoke(new Action(() =>
                                     {
-                                        item.Speed = 0;
-                                        _activeDownloads = Math.Max(0, _activeDownloads - 1);
-                                        UpdateDownloadBadge();
-                                        if (item.Status == "已完成")
-                                            ShowDownloadToast(item);
-                                    }
-                                });
-                            };
+                                        try
+                                        {
+                                            item.Status = e.DownloadOperation.State switch
+                                            {
+                                                CoreWebView2DownloadState.Completed => "已完成",
+                                                CoreWebView2DownloadState.Interrupted => "已中断",
+                                                _ => "下载中"
+                                            };
+                                            if (item.Status == "已完成" || item.Status == "已中断")
+                                            {
+                                                item.Speed = 0;
+                                                _activeDownloads = Math.Max(0, _activeDownloads - 1);
+                                                UpdateDownloadBadge();
+                                                if (item.Status == "已完成")
+                                                    ShowDownloadToast(item);
+                                            }
+                                        }
+                                        catch { }
+                                    })); } catch { }
+                                };
+                            }
+                            else { e.Cancel = true; }
                         }
-                        else { e.Cancel = true; }
-                    }
-                    finally { deferral.Complete(); }
-                });
+                        catch { e.Cancel = true; }
+                        finally { try { deferral.Complete(); } catch { } }
+                    });
+                }
+                catch { try { deferral.Complete(); } catch { } e.Cancel = true; }
             };
         }
 
@@ -2579,7 +2651,10 @@ window.chrome.webview.postMessage(JSON.stringify({type:""pwd"",site:location.hos
                         var user = msg.GetProperty("u").GetString() ?? "";
                         var pass = msg.GetProperty("p").GetString() ?? "";
                         if (!string.IsNullOrEmpty(site) && !string.IsNullOrEmpty(user) && !string.IsNullOrEmpty(pass))
-                            Dispatcher.Invoke(() => SavePasswordEntry(site, user, pass));
+                        {
+                            if (_isShuttingDown) return;
+                            try { Dispatcher.BeginInvoke(new Action(() => { try { SavePasswordEntry(site, user, pass); } catch { } })); } catch { }
+                        }
                     }
                 }
                 catch { }
@@ -2730,165 +2805,209 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
         /// <param name="incognito">是否为无痕模式</param>
         private async void CreateAndAddTab(string initialUrl, bool incognito)
         {
-            // 新建标签页时关闭设置页，回到网页视图
-            settingsPage.Visibility = Visibility.Collapsed;
-            webArea.Visibility = Visibility.Visible;
-
-            var tab = new TabInfo { IsIncognito = incognito };
-            _tabs.Add(tab);
-            tabList.SelectedItem = tab;
-
-            var wv = new Microsoft.Web.WebView2.Wpf.WebView2
+            if (_isShuttingDown) return;
+            TabInfo? tab = null;
+            Microsoft.Web.WebView2.Wpf.WebView2? wv = null;
+            bool tabAdded = false;
+            try
             {
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                VerticalAlignment = VerticalAlignment.Stretch
-            };
-            webViewContainer.Children.Add(wv);
-            _webViews[tab.Id] = wv;
-
-            // 使用共享环境（开启扩展支持），通过 CreationProperties 区分无痕/普通
-            var env = await GetWebViewEnvironmentAsync();
-            wv.CreationProperties = new Microsoft.Web.WebView2.Wpf.CoreWebView2CreationProperties
-            {
-                IsInPrivateModeEnabled = incognito
-            };
-            await wv.EnsureCoreWebView2Async(env);
-
-            wv.CoreWebView2.Settings.IsPasswordAutosaveEnabled = !incognito;
-            wv.CoreWebView2.Settings.IsGeneralAutofillEnabled = !incognito;
-            wv.CoreWebView2.Profile.PreferredColorScheme = _config.IsDarkMode
-                ? CoreWebView2PreferredColorScheme.Dark
-                : CoreWebView2PreferredColorScheme.Light;
-
-            // 仅普通标签页加载扩展（无痕标签页不加载扩展，符合无痕语义）
-            if (!incognito)
-            {
-                await EnsureExtensionsLoadedAsync(wv.CoreWebView2.Profile);
-            }
-
-            UpdateIncognitoIndicator();
-
-            SetupPasswordCapture(wv);
-            SetupProtection(wv);
-            SetupDownloads(wv);
-            SetupMediaSniffer(wv);
-            SetupPdfHandling(wv, tab);
-
-            wv.CoreWebView2.DocumentTitleChanged += (s, e) =>
-            {
-                Dispatcher.Invoke(() =>
+                // 新建标签页时关闭设置页，回到网页视图
+                await Dispatcher.InvokeAsync(() =>
                 {
-                    tab.Title = wv.CoreWebView2.DocumentTitle;
-                    if (tabList.SelectedItem == tab) UpdatePageTitle(tab.Title);
+                    settingsPage.Visibility = Visibility.Collapsed;
+                    webArea.Visibility = Visibility.Visible;
                 });
-            };
 
-            wv.CoreWebView2.FaviconChanged += async (s, args) =>
-            {
-                try
+                tab = new TabInfo { IsIncognito = incognito };
+                wv = new Microsoft.Web.WebView2.Wpf.WebView2
                 {
-                    using var iconStream = await wv.CoreWebView2.GetFaviconAsync(CoreWebView2FaviconImageFormat.Png);
-                    if (iconStream == null || iconStream.Length == 0) { Dispatcher.Invoke(() => tab.Favicon = null); return; }
-                    using var ms = new MemoryStream();
-                    await iconStream.CopyToAsync(ms);
-                    ms.Position = 0;
-                    Dispatcher.Invoke(() =>
-                    {
-                        var bmp = new BitmapImage();
-                        bmp.BeginInit();
-                        bmp.CacheOption = BitmapCacheOption.OnLoad;
-                        bmp.StreamSource = ms;
-                        bmp.EndInit();
-                        bmp.Freeze();
-                        tab.Favicon = bmp;
-                    });
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Stretch
+                };
+
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    _tabs.Add(tab);
+                    tabAdded = true;
+                    tabList.SelectedItem = tab;
+                    webViewContainer.Children.Add(wv);
+                    _webViews[tab.Id] = wv;
+                });
+
+                // 使用共享环境（开启扩展支持），通过 CreationProperties 区分无痕/普通
+                var env = await GetWebViewEnvironmentAsync();
+                wv.CreationProperties = new Microsoft.Web.WebView2.Wpf.CoreWebView2CreationProperties
+                {
+                    IsInPrivateModeEnabled = incognito
+                };
+                await wv.EnsureCoreWebView2Async(env);
+
+                wv.CoreWebView2.Settings.IsPasswordAutosaveEnabled = !incognito;
+                wv.CoreWebView2.Settings.IsGeneralAutofillEnabled = !incognito;
+                wv.CoreWebView2.Profile.PreferredColorScheme = _config.IsDarkMode
+                    ? CoreWebView2PreferredColorScheme.Dark
+                    : CoreWebView2PreferredColorScheme.Light;
+
+                // 仅普通标签页加载扩展（无痕标签页不加载扩展，符合无痕语义）
+                if (!incognito)
+                {
+                    await EnsureExtensionsLoadedAsync(wv.CoreWebView2.Profile);
                 }
-                catch { Dispatcher.Invoke(() => tab.Favicon = null); }
-            };
 
-            wv.CoreWebView2.NavigationStarting += (s, e) =>
-            {
-                Dispatcher.Invoke(() =>
+                await Dispatcher.InvokeAsync(() => UpdateIncognitoIndicator());
+
+                SetupPasswordCapture(wv);
+                SetupProtection(wv);
+                SetupDownloads(wv);
+                SetupMediaSniffer(wv);
+                SetupPdfHandling(wv, tab);
+
+                // 安全事件辅助方法：所有 WebView2 事件都走此包装，确保异常被吞、关闭时不触发
+                void SafeDispatch(Action a)
                 {
-                    if (tabList.SelectedItem == tab)
-                    {
-                        txtUrl.Text = e.Uri;
-                        btnStop.Visibility = Visibility.Visible;
-                        btnReload.Visibility = Visibility.Collapsed;
-                    }
-                });
-            };
+                    if (_isShuttingDown) return;
+                    try { Dispatcher.BeginInvoke(new Action(() => { if (!_isShuttingDown) { try { a(); } catch { } } })); } catch { }
+                }
 
-            wv.CoreWebView2.NavigationCompleted += (s, e) =>
-            {
-                Dispatcher.Invoke(() =>
+                wv.CoreWebView2.DocumentTitleChanged += (s, e) =>
                 {
-                    tab.LastActiveTime = DateTime.Now;
-
-                    // ===== 离线检测：导航失败（断网/DNS失败/服务器拒绝）→ 显示小恐龙游戏 =====
-                    if (!e.IsSuccess)
+                    SafeDispatch(() =>
                     {
-                        var curSrc = wv.CoreWebView2.Source ?? "";
-                        // 已经在游戏页/主页 → 不再重复跳转（防止死循环）
-                        if (curSrc.Contains("DinoGame.html", StringComparison.OrdinalIgnoreCase)
-                            || curSrc.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase))
+                        tab.Title = wv.CoreWebView2.DocumentTitle;
+                        if (tabList.SelectedItem == tab) UpdatePageTitle(tab.Title);
+                    });
+                };
+
+                wv.CoreWebView2.FaviconChanged += async (s, args) =>
+                {
+                    if (_isShuttingDown) return;
+                    try
+                    {
+                        using var iconStream = await wv.CoreWebView2.GetFaviconAsync(CoreWebView2FaviconImageFormat.Png);
+                        if (iconStream == null || iconStream.Length == 0) { SafeDispatch(() => tab.Favicon = null); return; }
+                        // 将图标数据复制到 byte[]，避免 MemoryStream 在 Dispatcher 回调外被释放
+                        var faviconBytes = new byte[iconStream.Length];
+                        using (var ms = new MemoryStream())
                         {
+                            await iconStream.CopyToAsync(ms);
+                            faviconBytes = ms.ToArray();
+                        }
+                        SafeDispatch(() =>
+                        {
+                            using var bms = new MemoryStream(faviconBytes);
+                            var bmp = new BitmapImage();
+                            bmp.BeginInit();
+                            bmp.CacheOption = BitmapCacheOption.OnLoad;
+                            bmp.StreamSource = bms;
+                            bmp.EndInit();
+                            bmp.Freeze();
+                            tab.Favicon = bmp;
+                        });
+                    }
+                    catch { SafeDispatch(() => tab.Favicon = null); }
+                };
+
+                wv.CoreWebView2.NavigationStarting += (s, e) =>
+                {
+                    SafeDispatch(() =>
+                    {
+                        if (tabList.SelectedItem == tab)
+                        {
+                            txtUrl.Text = e.Uri;
+                            btnStop.Visibility = Visibility.Visible;
+                            btnReload.Visibility = Visibility.Collapsed;
+                        }
+                    });
+                };
+
+                wv.CoreWebView2.NavigationCompleted += (s, e) =>
+                {
+                    SafeDispatch(() =>
+                    {
+                        tab.LastActiveTime = DateTime.Now;
+
+                        // ===== 离线检测：导航失败（断网/DNS失败/服务器拒绝）→ 显示小恐龙游戏 =====
+                        if (!e.IsSuccess)
+                        {
+                            var curSrc = wv.CoreWebView2.Source ?? "";
+                            // 已经在游戏页/主页 → 不再重复跳转（防止死循环）
+                            if (curSrc.Contains("DinoGame.html", StringComparison.OrdinalIgnoreCase)
+                                || curSrc.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase))
+                            {
+                                btnStop.Visibility = Visibility.Collapsed;
+                                btnReload.Visibility = Visibility.Visible;
+                                return;
+                            }
+                            try { wv.CoreWebView2.Navigate("file:///" + EnsureDinoGame().Replace('\\', '/')); } catch { }
+                            tab.Title = "离线了 — 小恐龙游戏";
+                            if (tabList.SelectedItem == tab) UpdatePageTitle(tab.Title);
                             btnStop.Visibility = Visibility.Collapsed;
                             btnReload.Visibility = Visibility.Visible;
                             return;
                         }
-                        wv.CoreWebView2.Navigate("file:///" + EnsureDinoGame().Replace('\\', '/'));
-                        tab.Title = "离线了 — 小恐龙游戏";
-                        if (tabList.SelectedItem == tab) UpdatePageTitle(tab.Title);
-                        btnStop.Visibility = Visibility.Collapsed;
-                        btnReload.Visibility = Visibility.Visible;
-                        return;
-                    }
 
-                    if (tabList.SelectedItem == tab)
-                    {
-                        var url = wv.CoreWebView2.Source;
-                        txtUrl.Text = url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase) ? "" : url;
-                        btnStop.Visibility = Visibility.Collapsed;
-                        btnReload.Visibility = Visibility.Visible;
-                        btnBack.IsEnabled = wv.CoreWebView2.CanGoBack;
-                        btnForward.IsEnabled = wv.CoreWebView2.CanGoForward;
-                        UpdateBookmarkIcon(url);
-                        UpdatePageTitle(tab.Title);
-                    }
-                    // 无痕标签页：不记历史、不自动填充密码、不捕获密码
-                    if (!incognito)
-                    {
-                        AddHistory(wv.CoreWebView2.Source, tab.Title);
-                        InjectScripts(wv, wv.CoreWebView2.Source);
-                        InjectPasswordAutofill(wv, wv.CoreWebView2.Source);
-                        try { wv.CoreWebView2.ExecuteScriptAsync(PasswordCaptureScript); } catch { }
-                    }
-                    else
-                    {
-                        // 无痕标签页仍可注入用户脚本（用户主动选择），但不记录任何数据
-                        InjectScripts(wv, wv.CoreWebView2.Source);
-                    }
-                });
-            };
+                        if (tabList.SelectedItem == tab)
+                        {
+                            var url = wv.CoreWebView2.Source;
+                            txtUrl.Text = url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase) ? "" : url;
+                            btnStop.Visibility = Visibility.Collapsed;
+                            btnReload.Visibility = Visibility.Visible;
+                            btnBack.IsEnabled = wv.CoreWebView2.CanGoBack;
+                            btnForward.IsEnabled = wv.CoreWebView2.CanGoForward;
+                            UpdateBookmarkIcon(url);
+                            UpdatePageTitle(tab.Title);
+                        }
+                        // 无痕标签页：不记历史、不自动填充密码、不捕获密码
+                        if (!incognito)
+                        {
+                            try { AddHistory(wv.CoreWebView2.Source, tab.Title); } catch { }
+                            try { InjectScripts(wv, wv.CoreWebView2.Source); } catch { }
+                            try { InjectPasswordAutofill(wv, wv.CoreWebView2.Source); } catch { }
+                            try { wv.CoreWebView2.ExecuteScriptAsync(PasswordCaptureScript); } catch { }
+                        }
+                        else
+                        {
+                            // 无痕标签页仍可注入用户脚本（用户主动选择），但不记录任何数据
+                            try { InjectScripts(wv, wv.CoreWebView2.Source); } catch { }
+                        }
+                    });
+                };
 
-            wv.CoreWebView2.NewWindowRequested += (s, e) =>
-            {
-                e.Handled = true;
-                // 继承当前标签页的无痕状态
-                Dispatcher.Invoke(() => CreateAndAddTab(e.Uri, incognito));
-            };
-
-            wv.CoreWebView2.SourceChanged += (s, e) =>
-            {
-                Dispatcher.Invoke(() =>
+                wv.CoreWebView2.NewWindowRequested += (s, e) =>
                 {
-                    if (tabList.SelectedItem == tab && !wv.CoreWebView2.Source.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase))
-                        txtUrl.Text = wv.CoreWebView2.Source;
-                });
-            };
+                    e.Handled = true;
+                    // 继承当前标签页的无痕状态；BeginInvoke 避免死锁，内部 CreateAndAddTab 已有 try/catch
+                    if (_isShuttingDown) return;
+                    try { Dispatcher.BeginInvoke(new Action(() => { try { CreateAndAddTab(e.Uri, incognito); } catch { } })); } catch { }
+                };
 
-            wv.CoreWebView2.Navigate(initialUrl);
+                wv.CoreWebView2.SourceChanged += (s, e) =>
+                {
+                    SafeDispatch(() =>
+                    {
+                        if (tabList.SelectedItem == tab && !wv.CoreWebView2.Source.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase))
+                            txtUrl.Text = wv.CoreWebView2.Source;
+                    });
+                };
+
+                wv.CoreWebView2.Navigate(initialUrl);
+            }
+            catch (Exception ex)
+            {
+                // v1.9.1：创建标签页失败时清理残留，防止半初始化状态导致后续崩溃
+                System.Diagnostics.Debug.WriteLine($"CreateAndAddTab failed: {ex.Message}");
+                try
+                {
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        try { if (wv != null) webViewContainer.Children.Remove(wv); } catch { }
+                        try { if (tab != null && tabAdded) _tabs.Remove(tab); } catch { }
+                        try { if (tab != null) _webViews.Remove(tab.Id); } catch { }
+                        try { wv?.Dispose(); } catch { }
+                    });
+                }
+                catch { }
+            }
         }
 
         private void TabList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -2971,16 +3090,37 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
 
         private void CloseTab(TabInfo tab)
         {
-            int idx = _tabs.IndexOf(tab);
-            _tabs.Remove(tab);
-            if (_webViews.TryGetValue(tab.Id, out var wv))
+            if (_isShuttingDown) return;
+            try
             {
-                webViewContainer.Children.Remove(wv);
-                wv.Dispose();
-                _webViews.Remove(tab.Id);
+                int idx = _tabs.IndexOf(tab);
+
+                // 获取 WebView2 并从容器中移除
+                Microsoft.Web.WebView2.Wpf.WebView2? wv = null;
+                if (_webViews.TryGetValue(tab.Id, out wv))
+                {
+                    _webViews.Remove(tab.Id);
+                    try { wv.Visibility = Visibility.Collapsed; } catch { }
+                    try { webViewContainer.Children.Remove(wv); } catch { }
+                    // v1.9.1：延迟 Dispose 到 Background 优先级，让当前同步事件链完成，避免回调访问已释放 COM 对象
+                    var wvRef = wv;
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        try { wvRef?.Dispose(); } catch { }
+                    }), DispatcherPriority.Background);
+                }
+
+                _tabs.Remove(tab);
+
+                if (_tabs.Count == 0)
+                {
+                    try { NewTab(); } catch { }
+                    return;
+                }
+                if (idx >= _tabs.Count) idx = _tabs.Count - 1;
+                if (idx >= 0) tabList.SelectedIndex = idx;
             }
-            if (_tabs.Count == 0) { NewTab(); return; }
-            tabList.SelectedIndex = Math.Min(idx, _tabs.Count - 1);
+            catch { }
         }
 
         private void UpdatePageTitle(string title)
@@ -4420,11 +4560,13 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
 
         private void CheckAndFreezeIdleTabs()
         {
+            if (_isShuttingDown) return;
             if (!_config.TabFreezeEnabled) return;
             try
             {
                 Dispatcher.Invoke(() =>
                 {
+                    if (_isShuttingDown) return;
                     var threshold = DateTime.Now.AddMinutes(-_config.TabFreezeMinutes);
                     var idleTabs = _tabs.Where(t => !t.IsFrozen &&
                         t != tabList.SelectedItem &&
@@ -4432,7 +4574,9 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                         !t.IsPdf &&
                         t.LastActiveTime < threshold).ToList();
                     foreach (var tab in idleTabs)
-                        FreezeTab(tab);
+                    {
+                        try { FreezeTab(tab); } catch { }
+                    }
                 });
             }
             catch { }
@@ -4443,23 +4587,29 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
         {
             wv.CoreWebView2.SourceChanged += (s, e) =>
             {
-                Dispatcher.Invoke(() =>
+                if (_isShuttingDown) return;
+                try { Dispatcher.BeginInvoke(new Action(() =>
                 {
-                    var url = wv.CoreWebView2?.Source ?? "";
-                    tab.IsPdf = url.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ||
-                                url.Contains(".pdf?", StringComparison.OrdinalIgnoreCase);
-                    if (tab.IsPdf)
+                    try
                     {
-                        _ = wv.CoreWebView2.ExecuteScriptAsync(PdfToolbarScript);
-                        if (tabList.SelectedItem == tab)
-                            ShowPdfSidePanel();
+                        if (_isShuttingDown) return;
+                        var url = wv.CoreWebView2?.Source ?? "";
+                        tab.IsPdf = url.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ||
+                                    url.Contains(".pdf?", StringComparison.OrdinalIgnoreCase);
+                        if (tab.IsPdf)
+                        {
+                            _ = wv.CoreWebView2?.ExecuteScriptAsync(PdfToolbarScript);
+                            if (tabList.SelectedItem == tab)
+                                ShowPdfSidePanel();
+                        }
+                        else
+                        {
+                            if (tabList.SelectedItem == tab)
+                                HidePdfSidePanel();
+                        }
                     }
-                    else
-                    {
-                        if (tabList.SelectedItem == tab)
-                            HidePdfSidePanel();
-                    }
-                });
+                    catch { }
+                })); } catch { }
             };
         }
 

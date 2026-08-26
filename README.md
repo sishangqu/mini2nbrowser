@@ -10,7 +10,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D4?logo=windows&logoColor=white)](#)
 [![License](https://img.shields.io/badge/License-MIT-success.svg)](#)
 
-**v1.9.0** · 多标签 · 无痕浏览 · 扩展支持 · 油猴脚本 · 双主题 · 密码管理 · 系统托盘 · PDF 批注 · 搜索引擎关键字 · 地址栏智能联想 · 网页媒体嗅探下载 · m3u8 纯 C# 合并 · 离线北极熊游戏 · 标签静音 · 网页截图 · 鼠标手势 · 页内查找 · 全屏模式 · 强制暗色网页 · 阅读模式 · 画中画 · 二维码生成
+**v1.9.1** · 多标签 · 无痕浏览 · 扩展支持 · 油猴脚本 · 双主题 · 密码管理 · 系统托盘 · PDF 批注 · 搜索引擎关键字 · 地址栏智能联想 · 网页媒体嗅探下载 · m3u8 纯 C# 合并 · 离线北极熊游戏 · 标签静音 · 网页截图 · 鼠标手势 · 页内查找 · 全屏模式 · 强制暗色网页 · 阅读模式 · 画中画 · 二维码生成 · **深度稳定性修复**
 
 </div>
 
@@ -217,9 +217,9 @@
 
 | 版本 | 发布目录 | EXE 大小 | 总大小 | 说明 | 适合场景 |
 |---|---|---|---|---|---|
-| **框架依赖 多文件** | `F:\1.8.0\程序\框架依赖版\` | ~0.7 MB | ~6 MB | DLL 分开，依赖清晰 | 开发调试、二次打包 |
-| **框架依赖 单文件** ✅推荐 | `F:\1.8.0\程序\框架依赖单文件\` | ~5 MB | ~5 MB | 单 EXE + 少量配置，打包 WebView2Loader | **日常分发、用户共享**，需系统安装 .NET 8 Desktop Runtime |
-| **自包含 单文件** | `F:\1.8.0\程序\自包含单文件\` | ~75 MB | ~75 MB | 自带 .NET 8 Runtime，首次启动解压 | **离线 / 干净系统 / 免装运行时**，开箱即用 |
+| **框架依赖 多文件** | `F:\1.9.1\程序\框架依赖-多文件\` | ~0.6 MB | ~6 MB | DLL 分开，依赖清晰 | 开发调试、二次打包 |
+| **框架依赖 单文件** ✅推荐 | `F:\1.9.1\程序\框架依赖-单文件\` | ~5.6 MB | ~7.4 MB | 单 EXE + WebView2Loader/e_sqlite3 随行，原生库不可压缩 | **日常分发、用户共享**，需系统安装 .NET 8 Desktop Runtime |
+| **自包含 单文件** | `F:\1.9.1\程序\自包含-单文件\` | ~76 MB | ~76 MB | 自带 .NET 8 Runtime（ReadyToRun 预编译 + 压缩），首次启动稍慢 | **离线 / 干净系统 / 免装运行时**，开箱即用 |
 
 > 💡 **如何选？** 大多数情况下用「框架依赖 单文件」即可（~5MB）。Windows 11 22H2+ / Windows 10 21H2+ 基本都已预装 .NET 8 Desktop Runtime；如果目标环境完全不确定，选「自包含 单文件」。
 
@@ -276,24 +276,24 @@ cd mini2nbrowser
 # 开发调试
 dotnet run --project mini2nbrowser\mini2nbrowser.csproj
 
-# 发布框架依赖 多文件（默认 publish）
+# 发布框架依赖 多文件
 dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
-  --self-contained false -o publish\v1.6.0
+  --self-contained false -o publish\fd-multi
 
 # 发布框架依赖 单文件（✅推荐日常分发）
 dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
   --self-contained false ^
   -p:PublishSingleFile=true ^
-  -p:IncludeNativeLibrariesForSelfExtract=true ^
-  -o publish\v1.6.0-fd-single
+  -o publish\fd-single
 
-# 发布自包含 单文件（自带 .NET 8 Runtime，压缩）
+# 发布自包含 单文件（自带 .NET 8 Runtime，压缩 + ReadyToRun）
 dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
   --self-contained true ^
   -p:PublishSingleFile=true ^
   -p:IncludeNativeLibrariesForSelfExtract=true ^
   -p:EnableCompressionInSingleFile=true ^
-  -o publish\v1.6.0-sc-single
+  -p:PublishReadyToRun=true ^
+  -o publish\sc-single
 ```
 
 ---
@@ -349,7 +349,8 @@ mini2nbrowser.exe
 
 %AppData%\mini2nbrowser\
 ├── config.json          # 全局配置：主题 / 搜索引擎 / 防护开关（v1.4+ 迁移到此）
-└── media_site_cache.json # 媒体下载站点缓存：每站点并发上限 + 时间戳，7 天有效【v1.6】
+├── media_site_cache.json # 媒体下载站点缓存：每站点并发上限 + 时间戳，7 天有效【v1.6】
+└── crash.log            # 崩溃日志（v1.9.1+）：自动捕获未处理异常，2MB 自动轮转
 ```
 
 ---
@@ -376,7 +377,32 @@ mini2nbrowser.exe
 
 ## 📝 版本历史
 
-### v1.9.0（最新，2026-08）
+### v1.9.1（最新，2026-08）—— **深度稳定性修复**
+- 🛡️ **三层全局异常防护**
+  - `DispatcherUnhandledException`（UI 线程）+ `AppDomain.UnhandledException`（非 UI 最后防线）+ `TaskScheduler.UnobservedTaskException`（Task GC 回收）全覆盖
+  - `IsRecoverable` 智能判定：COM 异常 / ObjectDisposed / IOException / NullReference / 集合修改异常标记为已处理后继续运行，不杀进程
+  - 崩溃日志自动写入 `%AppData%\mini2nbrowser\crash.log`（2MB 自动轮转 crash.log.old）
+- 🔒 **关闭流程全面加固**
+  - 新增 `volatile bool _isShuttingDown` 跨线程可见标志，所有定时器/事件回调在入口处快速退出
+  - 关窗顺序：设标志 → 取消下载 CTS → 隐藏所有 WebView2 → Children.Clear → 延迟（Background 优先级）Dispose，避免事件回调访问已释放 COM 对象
+  - 所有 Dispatcher.Invoke 替换为 BeginInvoke + shutdown 双重检查，防止高频事件（下载进度、图标更新）死锁 UI 线程
+- 🧵 **线程安全修复**
+  - `System.Timers.Timer`（CleanMemory / CheckAndFreezeIdleTabs）回调统一 Dispatcher.BeginInvoke 封送，禁止跨线程访问 WindowState / WPF 控件
+  - `MediaSniffer.Remove` 自动检测并封送 `ObservableCollection.Remove` 到 UI 线程，解决下载完成时跨线程修改集合崩溃
+  - 密码保存、下载状态更新、Protection BlockCount 更新等 async void 全部包在 try/catch 中
+- 🖼️ **Favicon 内存修复**
+  - FaviconChanged 先将图标数据复制到 `byte[]` 再封送到 UI 线程，避免 MemoryStream using 块在 Dispatcher 队列执行前被释放导致 BitmapImage 损坏
+  - BitmapImage 使用 CacheOption=OnLoad + Freeze() 确保跨线程安全
+- 🧹 **标签页安全关闭**
+  - CloseTab 先 Collapse 再 Remove 最后延迟 Dispose（DispatcherPriority.Background），让同步事件链完成后再释放 COM 对象
+  - CreateAndAddTab 失败时自动清理部分创建的 Tab/WebView2，不残留半初始化控件
+- 📡 **Named Pipe 通信加固**
+  - 管道服务端改用 `await Dispatcher.InvokeAsync` 替代阻塞 WaitOne + Invoke，防止死锁
+  - StreamReader/Writer 显式指定 Encoding.UTF8，修复 HTML 实体（`&amp;`）损坏问题
+  - 空引用保护，防止窗口创建前收到激活消息导致 NullReference
+- ✅ **承压测试通过**：75秒空闲稳定性 / Named Pipe IPC 热启动 / 多 Profile 并发实例 / CleanMemory 周期回收 全部无崩溃
+
+### v1.9.0（2026-08）
 - 🆕 **阅读模式**
   - 更多菜单 → "阅读模式（当前标签）" 或 Ctrl+Shift+R
   - Readability 风格提取：按文本密度评分选最佳容器，剔除导航/侧边栏/广告
