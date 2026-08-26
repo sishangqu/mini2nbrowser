@@ -10,7 +10,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D4?logo=windows&logoColor=white)](#)
 [![License](https://img.shields.io/badge/License-MIT-success.svg)](#)
 
-**v1.4.0** · 多标签 · 无痕浏览 · 扩展支持 · 油猴脚本 · 双主题 · 密码管理 · 系统托盘 · PDF 批注 · 搜索引擎关键字
+**v1.6.0** · 多标签 · 无痕浏览 · 扩展支持 · 油猴脚本 · 双主题 · 密码管理 · 系统托盘 · PDF 批注 · 搜索引擎关键字 · 地址栏智能联想 · 网页媒体嗅探下载 · m3u8 纯 C# 合并 · 离线北极熊游戏
 
 </div>
 
@@ -31,6 +31,45 @@
 - 中键关闭、Ctrl+T 新建、Ctrl+W 关闭
 - 标签页显示网站图标 + 标题，尺寸与间距全面优化，无遮挡无重叠
 
+### 🔎 地址栏智能联想（v1.5 新增）
+- **本地 + 云端混合方案**：输入即时查询本地 SQLite（历史 / 书签），250ms 防抖后请求云端 Suggest
+- **CancellationTokenSource 取消竞态**：新输入到达自动取消上一个未完成请求，避免乱序覆盖
+- **来源色彩区分**：绿色 = 书签、蓝色 = 历史、紫色 = 云端，一目了然
+- **键盘导航**：↑↓ 选择、Enter 跳转、Esc 关闭、Tab 补全
+- **双写兼容**：新数据同时写入 SQLite 与旧 JSON，v1.4.x 用户无缝迁移
+- **无痕模式自动禁用云端联想**：避免搜索数据上传，保护隐私
+
+### 🎬 网页媒体嗅探与下载（v1.6 新增）
+- **WebView2 网络监听**：通过 `WebResourceResponseReceived` 事件捕获所有媒体响应
+- **双层匹配**：Content-Type + URL 扩展名联合判定，识别视频 / 音频 / 流媒体
+- **去重限流**：URL 哈希去重，单页最多保留 500 条，避免列表爆炸
+- **增强型多线程下载器**（移植自 ddm 项目，C++ → C# 移植）
+  - 多线程分块下载，最大 32 线程
+  - 服务器并发探测（4 → 32 递增，70% 成功率阈值）
+  - 站点缓存持久化（7 天有效，JSON 存储）
+  - 指数退避重试（最多 8 次）
+  - 滑动窗口速度采样（250ms / 8 点窗口）
+  - 单线程降级（不支持 Range 或拿不到大小时自动降级）
+- **UI 实时状态**：进度、已下载/总大小、活跃线程数、即时速度、平均速度、ETA
+- **状态流转**：已嗅探 → 探测大小 → 探测并发 → 下载中 → 合并中 → 已完成
+
+### 📺 m3u8 纯 C# 合并（v1.6 新增）
+- **零外部依赖**：完全使用 C# 实现 m3u8 流媒体下载与合并，**不需要 FFmpeg**
+- **master playlist 自动选流**：BANDWIDTH 最高自动选择
+- **8 路并发分片下载**：自动重试 3 次，失败重试间隔 500ms
+- **TS 二进制拼接**：按分片顺序追加，生成可播放的 MPEG-TS 文件
+- **现代播放器兼容**：VLC、PotPlayer、mpv、MPC-HC 等均可直接播放 .ts
+- **加密分片检测**：识别 `#EXT-X-KEY` 加密流并提示用户使用专业工具
+- **速度统计同步**：与文件下载一致的速度采样、平均速度、ETA 计算
+
+### 🐻 离线北极熊游戏（v1.5 新增）
+- **导航失败自动激活**：网页加载失败时显示离线游戏
+- **北极主题**：白色北极熊主角，极光、星空、飘雪、滚动冰裂纹背景
+- **障碍物**：冰柱（跳跃避让）+ 海鸟（蹲下避让）
+- **帧率无关动画**：dt 标准化物理计算，不同刷新率下表现一致
+- **动作流畅**：站立 / 滑行两套动画，跑步时身体弹跳、双脚交替、跳跃时收脚
+- **空格重玩**：碰撞冰柱触发 Game Over，按空格重置
+
 ### 📑 PDF 批注面板（v1.4 新增）
 - **本地 PDF 直接打开**：菜单项"打开本地 PDF..."或拖入窗口
 - **侧边浮动面板**：不遮挡 WebView2 原生 PDF 控件（缩放/保存/旋转/分页）
@@ -48,46 +87,41 @@
 - 支持自定义 `Keyword` / `SearchUrl` / `SuggestUrl`
 
 ### 🕵️ 无痕浏览
-- 基于 `CoreWebView2CreationProperties.IsInPrivateModeEnabled` 的真无痕模式
-- 无痕标签页：不记录历史、不保存密码、不自动填充、不加载扩展
-- 无痕窗口的新窗口请求自动继承无痕状态
-- URL 栏紫色无痕图标 + 标题 `[无痕]` 前缀
-- 快捷键 `Ctrl+Shift+N`
+- 独立用户数据目录，关闭即焚
+- 不写入历史、Cookie、缓存
+- **无痕模式下自动禁用云端联想**（v1.5）
 
 ### 🧩 扩展系统（v1.1 新增）
-- **CRX 文件导入**：自动解析 CRX v2/v3 头部格式，剥离签名后解压
-- **解压文件夹导入**：直接加载含 `manifest.json` 的扩展目录
-- **自动修复**：`_metadata` → `metadata` 重命名（WebView2 要求）
-- **扩展管理 UI**：启用/禁用开关、删除（含磁盘清理）、图标显示
-- **配置持久化**：`extensions.json` 记录所有扩展，重启自动加载
-- **版本检测**：WebView2 Runtime ≥ 1.0.2045 才启用，低版本友好提示
-- **安全提示**：界面明确标注"仅导入可信来源扩展"
+- 支持 CRX v2/v3 自动解析与解压
+- 支持文件夹形式直接导入
+- 扩展管理 UI：启用 / 禁用 / 删除 / 查看详情
+- 扩展元数据持久化（extensions.json）
 
 ### 📝 油猴脚本
-- 自定义 JavaScript 脚本，URL 匹配规则自动注入
-- 支持正则/关键字匹配，编辑器内嵌
-- 配置持久化到 `scripts.json`
+- 自定义 JavaScript 注入到所有页面
+- 脚本编辑器（支持新增 / 编辑 / 删除）
+- 脚本持久化（scripts.json）
 
 ### 🔒 智能防护
-- 内置 30+ 广告/追踪域名拦截（返回 204 空响应）
-- 拦截列表包含：doubleclick、googlesyndication、google-analytics、facebook 等主流广告网络
+- 拦截弹窗、屏蔽恶意网站
+- 自定义黑名单 / 白名单
+- 关闭确认对话框
 
 ### 🔑 密码管理
-- **DPAPI 加密存储**（Windows 用户级，跨设备不可解密）
-- 自动捕获表单提交的账号密码
-- 自动填充已保存的登录信息
-- 可视化管理面板
+- 表单自动填充
+- 密码以 DPAPI 加密存储
+- 一键查看 / 删除
 
 ### 🌐 导航与搜索
-- 智能地址解析：URL / 域名 / 搜索词自动识别，支持关键字触发（见搜索引擎系统）
-- 7 个预置搜索引擎 + 无限自定义，可一键切换默认引擎
-- 书签管理（JSON 持久化，浮动面板）
+- 地址栏智能识别 URL / 搜索词
 - 历史记录（最多 500 条，可搜索过滤）
+- 历史与书签 SQLite 双写（v1.5+ 用于地址栏联想）
 
 ### 📥 下载管理
 - 实时进度、速度、剩余时间
 - 角标提示活跃下载数
 - Toast 通知下载完成
+- 媒体嗅探下载集成（v1.6+）
 
 ### 🎨 双主题
 - 深色 / 浅色主题一键切换
@@ -117,14 +151,15 @@
 ### 运行环境
 - **Windows 10 1809+** / Windows 11
 - **Microsoft Edge WebView2 Runtime**（[下载](https://developer.microsoft.com/microsoft-edge/webview2/)）
+- 「框架依赖」版需要系统安装 .NET 8 Desktop Runtime；「自包含」版自带运行时
 
 ### 三种发行版
 
 | 版本 | 发布目录 | EXE 大小 | 总大小 | 说明 | 适合场景 |
 |---|---|---|---|---|---|
-| **框架依赖 多文件** | `publish/v1.4.0/` | 0.64 MB | 5.39 MB | 14 文件，DLL 分开，依赖清晰 | 开发调试、二次打包 |
-| **框架依赖 单文件** ✅推荐 | `publish/v1.4.0-fd-single/` | **3.91 MB** | 4.72 MB | 单 EXE + 少量配置，打包 WebView2Loader | **日常分发、用户共享**，需系统安装 .NET 8 Desktop Runtime |
-| **自包含 单文件** | `publish/v1.4.0-sc-single/` | **74.7 MB** | 75.46 MB | 自带 .NET 8 Runtime，首次启动解压 | **离线 / 干净系统 / 免装运行时**，开箱即用 |
+| **框架依赖 多文件** | `F:\1.6.0\程序\框架依赖版\` | ~0.7 MB | ~6 MB | DLL 分开，依赖清晰 | 开发调试、二次打包 |
+| **框架依赖 单文件** ✅推荐 | `F:\1.6.0\程序\框架依赖单文件\` | ~5 MB | ~5 MB | 单 EXE + 少量配置，打包 WebView2Loader | **日常分发、用户共享**，需系统安装 .NET 8 Desktop Runtime |
+| **自包含 单文件** | `F:\1.6.0\程序\自包含单文件\` | ~75 MB | ~75 MB | 自带 .NET 8 Runtime，首次启动解压 | **离线 / 干净系统 / 免装运行时**，开箱即用 |
 
 > 💡 **如何选？** 大多数情况下用「框架依赖 单文件」即可（~5MB）。Windows 11 22H2+ / Windows 10 21H2+ 基本都已预装 .NET 8 Desktop Runtime；如果目标环境完全不确定，选「自包含 单文件」。
 
@@ -149,6 +184,7 @@ mini2nbrowser.exe -p personal
 - **C# 12** / **.NET 8** / **WPF**
 - **WebView2** 1.0.4129（基于 Chromium 内核）
 - **Hardcodet.NotifyIcon.Wpf**（系统托盘）
+- **Microsoft.Data.Sqlite** 8.0.10（本地历史 / 书签 / 联想查询）
 
 ### 项目结构
 
@@ -160,9 +196,12 @@ mini2nbrowser/
 ├── ExtensionsWindow.xaml(.cs)  # 扩展管理 UI
 ├── CrxLoader.cs                # CRX v2/v3 解析与解压
 ├── ExtensionInfo.cs            # 扩展数据模型
+├── BrowserLocalDb.cs            # SQLite 封装（历史/书签/联想查询）【v1.5】
+├── MediaSniffer.cs              # 网页媒体嗅探 + 多线程下载器 + m3u8 纯 C# 合并【v1.6】
 ├── DarkTheme.xaml              # 深色主题
 ├── LightTheme.xaml             # 浅色主题
 ├── HomePage.html               # 内嵌新标签页（EmbeddedResource）
+├── DinoGame.html               # 内嵌离线北极熊游戏（EmbeddedResource）【v1.5】
 ├── app.ico / app_dark.ico      # 应用图标
 └── mini2nbrowser.csproj        # 项目配置
 ```
@@ -179,14 +218,14 @@ dotnet run --project mini2nbrowser\mini2nbrowser.csproj
 
 # 发布框架依赖 多文件（默认 publish）
 dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
-  --self-contained false -o publish\v1.4.0
+  --self-contained false -o publish\v1.6.0
 
 # 发布框架依赖 单文件（✅推荐日常分发）
 dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
   --self-contained false ^
   -p:PublishSingleFile=true ^
   -p:IncludeNativeLibrariesForSelfExtract=true ^
-  -o publish\v1.4.0-fd-single
+  -o publish\v1.6.0-fd-single
 
 # 发布自包含 单文件（自带 .NET 8 Runtime，压缩）
 dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
@@ -194,7 +233,7 @@ dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
   -p:PublishSingleFile=true ^
   -p:IncludeNativeLibrariesForSelfExtract=true ^
   -p:EnableCompressionInSingleFile=true ^
-  -o publish\v1.4.0-sc-single
+  -o publish\v1.6.0-sc-single
 ```
 
 ---
@@ -208,6 +247,10 @@ dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
 | `Ctrl+D` | 添加/取消书签 |
 | `Ctrl+Shift+N` | 新建无痕标签页 |
 | `Ctrl+L` | 聚焦地址栏（可用关键字快速搜索） |
+| `↑` / `↓` | 地址栏联想列表上下选择（v1.5） |
+| `Enter` | 跳转到选中或输入的地址 |
+| `Esc` | 关闭地址栏联想列表（v1.5） |
+| `Tab` | 用选中项补全地址栏（v1.5） |
 
 ### 地址栏关键字速查（v1.4 新增）
 
@@ -228,13 +271,15 @@ dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
 所有用户数据按 profile 隔离：
 - **浏览器数据**（历史/书签/密码/扩展/Cookie）存于 exe 同目录（或 `Profiles\<name>\` 子目录）
 - **全局配置**（主题/搜索引擎/防护开关）存于 `%AppData%\mini2nbrowser\config.json`，多 Profile 共享
+- **媒体站点缓存**存于 `%AppData%\mini2nbrowser\media_site_cache.json`（v1.6+）
 
 ```
 mini2nbrowser.exe
-├── bookmarks.json       # 书签
-├── history.json         # 历史记录（最多 500 条）
-├── scripts.json         # 油猴脚本
-├── passwords.json       # 密码（DPAPI 加密）
+├── bookmarks.json       # 书签（v1.5+ 同时写入 SQLite）
+├── history.json         # 历史记录（最多 500 条；v1.5+ 同时写入 SQLite）
+├── browser.db          # SQLite 数据库：History / Bookmark 表 + 索引【v1.5】
+├── scripts.json        # 油猴脚本
+├── passwords.json      # 密码（DPAPI 加密）
 ├── extensions.json     # 扩展记录
 ├── Extensions\          # 扩展解压目录
 ├── WebViewData\         # WebView2 用户数据（Cookie、缓存等）
@@ -243,7 +288,8 @@ mini2nbrowser.exe
     └── personal\
 
 %AppData%\mini2nbrowser\
-└── config.json          # 全局配置：主题 / 搜索引擎 / 防护开关（v1.4+ 迁移到此）
+├── config.json          # 全局配置：主题 / 搜索引擎 / 防护开关（v1.4+ 迁移到此）
+└── media_site_cache.json # 媒体下载站点缓存：每站点并发上限 + 时间戳，7 天有效【v1.6】
 ```
 
 ---
@@ -254,12 +300,61 @@ mini2nbrowser.exe
 - **扩展导入**：仅处理用户本地提供的 CRX/文件夹，不爬取任何商店
 - **路径穿越防护**：CRX 解压时校验所有路径必须在目标目录内
 - **Profile 名清理**：非法字符自动替换，禁止 `.` / `..`
+- **无痕模式**：自动禁用云端地址栏联想，防止搜索词上传（v1.5+）
+- **媒体嗅探**：仅监听 WebView2 自身网络请求，不主动抓取第三方站点
+
+---
+
+## ⚠️ 已知限制
+
+- **m3u8 加密流**：`#EXT-X-KEY` 加密分片暂不支持自动下载，请使用专业工具
+- **DASH/MPD**：动态自适应流暂不支持自动下载
+- **云端联想接口**：使用第三方 Suggest 接口，可能存在速率限制 / 格式变更 / IP 封禁，开源发布时需附带风险说明
+- **TS 合并**：纯 C# 拼接生成 .ts 文件，部分老旧播放器（Windows Media Player）需安装解码器才能播放
 
 ---
 
 ## 📝 版本历史
 
-### v1.4.0（最新，2026-08）
+### v1.6.0（最新，2026-08）
+- 🆕 **网页媒体嗅探与下载**
+  - 监听 `WebResourceResponseReceived` 事件，自动识别视频 / 音频 / 流媒体
+  - Content-Type + URL 扩展名双层匹配，URL 去重限流，最多保留 500 条
+  - UI 列表展示 + 一键下载，含进度 / 速度 / 线程数 / ETA
+- 🆕 **增强型多线程下载器**（移植自 ddm 项目，C++ → C# 移植）
+  - 多线程分块（最大 32 线程）、并发探测（4→32 递增，70% 成功率阈值）
+  - 站点缓存（7 天有效，JSON 存储）、指数退避重试（最多 8 次）
+  - 滑动窗口速度采样（250ms / 8 点窗口）
+  - 单线程降级（不支持 Range 或拿不到大小时自动降级）
+- 🆕 **m3u8 纯 C# 合并**（零外部依赖，**不需要 FFmpeg**）
+  - master playlist 自动选流（BANDWIDTH 最高）
+  - 8 路并发分片下载，自动重试 3 次
+  - TS 二进制拼接，VLC / PotPlayer / mpv / MPC-HC 直接播放
+  - 加密分片检测，识别后提示用户
+- 🆕 **MediaSniffer.cs / FFmpegHelper.cs → 移除**
+  - 媒体嗅探与下载核心逻辑全部由纯 C# 实现，无外部依赖
+- 🐛 修复下载状态字段更新不及时问题
+- 🐛 修复 m3u8 下载无速度统计问题
+
+### v1.5.0（2026-08）
+- 🆕 **地址栏智能联想**（本地 SQLite + 云端 Suggest 混合方案）
+  - 输入即时查询本地 SQLite（历史 / 书签）
+  - 250ms 防抖后请求云端 Suggest，CancellationTokenSource 取消竞态
+  - 来源色彩区分（书签绿 / 历史蓝 / 云端紫）
+  - 键盘导航（↑↓/Enter/Esc/Tab）
+  - 无痕模式自动禁用云端联想
+- 🆕 **BrowserLocalDb.cs**：SQLite 封装，WAL 模式 + 索引优化
+  - History / Bookmark 表双索引（URL / 标题 / 访问时间）
+  - JSON 数据自动迁移到 SQLite，旧数据双写保持兼容
+- 🆕 **离线北极熊游戏**（DinoGame.html，EmbeddedResource）
+  - 导航失败自动激活，避免空白页尴尬
+  - 北极主题：极光、星空、飘雪、滚动冰裂纹
+  - 障碍物：冰柱（跳跃）+ 海鸟（蹲下）
+  - 帧率无关动画（dt 标准化），动作流畅
+  - 碰撞冰柱 → Game Over，空格重玩
+- 🆕 依赖 Microsoft.Data.Sqlite 8.0.10
+
+### v1.4.0（2026-08）
 - 🆕 **搜索引擎系统**
   - 预置 7 个引擎：必应（默认）、百度、搜狗、360、头条搜索、GitHub、StackOverflow
   - 地址栏关键字触发：`gh xxx` → GitHub、`bd xxx` → 百度、`so xxx` → StackOverflow 等

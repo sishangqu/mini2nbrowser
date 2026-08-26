@@ -8,9 +8,9 @@
     <UseWPF>true</UseWPF>
     <!-- 应用图标（exe + 任务栏） -->
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>1.4.0</Version>
-    <FileVersion>1.4.0.0</FileVersion>
-    <AssemblyVersion>1.4.0.0</AssemblyVersion>
+    <Version>1.6.0</Version>
+    <FileVersion>1.6.0.0</FileVersion>
+    <AssemblyVersion>1.6.0.0</AssemblyVersion>
 
     <!-- ===== 冷启动优化 ===== -->
     <!-- 分层编译：启动时用 QuickJIT 快速编译，热点方法后台优化 -->
@@ -29,6 +29,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="HomePage.html" />
+    <EmbeddedResource Include="DinoGame.html" />
   </ItemGroup>
 
   <!-- 图标嵌入为 Resource，运行时零 IO 快速加载 -->
@@ -39,6 +40,7 @@
 
   <ItemGroup>
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
   </ItemGroup>
 

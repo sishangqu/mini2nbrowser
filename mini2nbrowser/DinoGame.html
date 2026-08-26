@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>离线了 — 来局北极熊？</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden}
+body{background:linear-gradient(180deg,#0d1b2a 0%,#1b3a5c 40%,#2a6c8f 100%);font-family:'Segoe UI','Microsoft YaHei UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;user-select:none}
+#wrap{position:relative}
+#c{display:block;image-rendering:auto;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.3)}
+#hint{position:absolute;top:14px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,.6);font-size:13px;white-space:nowrap;pointer-events:none;transition:opacity .5s}
+#bar{margin-top:16px;display:flex;gap:28px;align-items:center;color:rgba(255,255,255,.7);font-size:14px}
+#bar b{color:#fff;font-weight:600}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" width="600" height="200"></canvas>
+  <div id="hint">按 空格 / ↑ 开始游戏</div>
+</div>
+<div id="bar">
+  <span>最高分 <b id="hi">0</b></span>
+  <span>当前分 <b id="sc">0</b></span>
+  <span style="opacity:.6">空格/↑ 跳 · ↓ 滑行</span>
+</div>
+<script>
+(function(){
+"use strict";
+const C=document.getElementById('c'),X=C.getContext('2d');
+const W=600,H=200,GY=165;
+
+// ===== 北极熊参数 =====
+const BW=30,BH=28;           // 站立尺寸
+const DW=40,DH=18;           // 蹲下尺寸
+const GRAV=0.62,JUMP=-12.5;
+let bear={x:55,y:GY-BH,vy:0,duck:false,jump:false,bob:0};
+let obs=[],snow=[],stars=[];
+let speed=5.5,score=0,hi=+(localStorage.hi||0),dead=false;
+let t=0,lastTime=0,runFrame=0;
+const ICE='#a8d8f0',ICE_D='#6fb8d8';
+
+// 初始化星星（极夜背景）
+for(let i=0;i<30;i++)stars.push({x:Math.random()*W,y:Math.random()*80,r:Math.random()*1.2+.3,tw:Math.random()*Math.PI*2});
+
+function rnd(a,b){return a+Math.random()*(b-a)}
+
+// ===== 障碍：冰柱（地）+ 海鸟（空，需蹲）=====
+function spawnObs(){
+  const interval=Math.max(55,95-score*0.08);
+  if(t%interval>1)return;
+  const r=Math.random();
+  if(r<0.55){
+    const h=rnd(26,42);
+    obs.push({x:W+20,y:GY-h,w:rnd(16,24),h:h,type:'ice'});
+  }else if(r<0.8){
+    obs.push({x:W+20,y:GY-rnd(26,36),w:18,h:rnd(26,36),type:'ice'});
+    obs.push({x:W+40,y:GY-rnd(28,38),w:16,h:rnd(28,38),type:'ice'});
+  }else{
+    obs.push({x:W+20,y:GY-rnd(48,72),w:32,h:20,type:'bird',fp:0});
+  }
+}
+
+function spawnSnow(){
+  if(snow.length<60 && Math.random()<0.4)
+    snow.push({x:Math.random()*W,y:-5,sx:rnd(-.3,.3),sy:rnd(.6,1.5),r:rnd(1,2.5)});
+}
+
+function reset(){
+  bear.y=GY-BH;bear.vy=0;bear.jump=false;bear.duck=false;bear.bob=0;
+  obs=[];snow=[];speed=5.5;score=0;dead=false;t=0;runFrame=0;
+}
+
+function jump(){
+  if(dead){reset();return}
+  if(!bear.jump){bear.vy=JUMP;bear.jump=true}
+}
+
+function duck(on){
+  if(bear.jump)return;
+  bear.duck=on;
+}
+
+// ===== 绘图工具 =====
+function R(x,y,w,h,c){X.fillStyle=c;X.fillRect(x|0,y|0,w|0,h|0)}
+
+// 北极熊绘制（圆头 + 圆耳 + 黑鼻 + 黑眼 + 身体弹跳 + 腿交替）
+function drawBear(){
+  let x=bear.x;
+  let isDuck=bear.duck;
+  let w=isDuck?DW:BW;
+  let h=isDuck?DH:BH;
+  let y=isDuck?GY-DH:bear.y;
+  let bob=isDuck?0:Math.sin(runFrame*0.3)*1.2;  // 跑动时身体上下微弹
+  y+=bob;
+
+  // 阴影
+  X.fillStyle='rgba(0,0,0,.15)';
+  X.beginPath();
+  X.ellipse(x+w/2,GY+2,w/2+4,3,0,0,Math.PI*2);
+  X.fill();
+
+  if(isDuck){
+    // ===== 滑行姿态：身体贴地 + 头朝前 =====
+    X.fillStyle='#f0f0f0';
+    R(x,y+2,w,h,'#f5f5f5');
+    R(x+w-12,y-2,14,10,'#f5f5f5');           // 头
+    R(x+w-6,y,4,4,'#f0f0f0');                // 耳朵
+    R(x+w-5,y+4,3,2,'#1a1a2e');              // 眼
+    R(x+w-1,y+6,3,2,'#1a1a2e');              // 鼻子
+    R(x+2,y+h-4,8,4,'#e8e8e8');              // 前腿伸出
+    // 滑行拖尾
+    X.fillStyle='rgba(255,255,255,.3)';
+    R(x-8,y+h-3,10,2,'rgba(255,255,255,.3)');
+    return;
+  }
+
+  // ===== 站立/跑动姿态 =====
+  X.fillStyle='#f5f5f5';
+  // 身体
+  R(x+4,y+8,w-8,h-10,'#f5f5f5');
+  // 头
+  R(x+w-14,y+2,16,14,'#f5f5f5');
+  // 耳朵（圆）
+  R(x+w-12,y,4,4,'#f5f5f5');
+  R(x+w-5,y,4,4,'#f5f5f5');
+  R(x+w-11,y+1,3,3,'#e8e8e8');
+  R(x+w-4,y+1,3,3,'#e8e8e8');
+  // 黑眼
+  R(x+w-9,y+6,2,2,'#1a1a2e');
+  // 黑鼻子
+  R(x+w-2,y+8,3,2,'#2a2a3e');
+  // 脚（跑动交替）
+  if(!bear.jump){
+    const ph=Math.floor(runFrame/4)%2;
+    if(ph===0){
+      R(x+6,y+h-4,6,4,'#e8e8e8');
+      R(x+w-14,y+h-2,6,2,'#e8e8e8');
+    }else{
+      R(x+6,y+h-2,6,2,'#e8e8e8');
+      R(x+w-14,y+h-4,6,4,'#e8e8e8');
+    }
+  }else{
+    // 跳跃时脚收起
+    R(x+6,y+h-3,6,3,'#e8e8e8');
+    R(x+w-14,y+h-3,6,3,'#e8e8e8');
+  }
+}
+
+function drawObs(o){
+  if(o.type==='ice'){
+    // 冰柱：蓝白渐变 + 闪光
+    X.fillStyle=ICE;
+    R(o.x,o.y,o.w,o.h,ICE);
+    R(o.x+2,o.y+2,o.w-4,o.h-4,'#c8e8f8');
+    R(o.x,o.y,o.w,2,'#e0f4fc');             // 顶部高光
+    R(o.x+o.w-3,o.y+4,2,o.h-8,ICE_D);       // 右侧阴影
+    R(o.x-1,o.y+o.w*.3,3,4,'rgba(255,255,255,.5)'); // 冰晶闪光
+  }else{
+    // 海鸟
+    o.fp=(o.fp+1)%12;
+    X.fillStyle='#e8e8e8';
+    R(o.x,o.y+6,o.w,5,'#d8d8d8');           // 身体
+    R(o.x+4,o.y+2,8,6,'#d8d8d8');           // 头
+    R(o.x+2,o.y+2,3,2,'#333');              // 眼
+    R(o.x+10,o.y+1,4,2,'#ff8c42');          // 喙
+    // 翅膀扇动
+    const wph=Math.floor(o.fp/6)%2;
+    if(wph===0){R(o.x+6,o.y+11,10,3,'rgba(200,200,200,.6)')}
+    else{R(o.x+6,o.y-1,10,3,'rgba(200,200,200,.6)')}
+  }
+}
+
+function drawGround(){
+  // 冰面
+  R(0,GY,W,H-GY,'#d0e8f4');
+  R(0,GY,W,2,'#e8f4fc');                     // 冰面顶部高光
+  // 冰面裂纹滚动
+  X.strokeStyle='rgba(100,160,200,.3)';
+  X.lineWidth=1;
+  for(let i=0;i<8;i++){
+    const gx=((i*80-(t*speed)%80)+W)%W;
+    X.beginPath();
+    X.moveTo(gx,GY+5);
+    X.lineTo(gx+10,GY+10);
+    X.lineTo(gx+4,GY+15);
+    X.stroke();
+  }
+  // 雪堆起伏
+  X.fillStyle='rgba(255,255,255,.4)';
+  for(let i=0;i<6;i++){
+    const sx=((i*100-(t*speed*0.7)%100)+W)%W;
+    X.beginPath();
+    X.arc(sx,GY,8,Math.PI,0);
+    X.fill();
+  }
+}
+
+function drawBg(){
+  // 渐变天空
+  const g=X.createLinearGradient(0,0,0,GY);
+  g.addColorStop(0,'#0d1b2a');
+  g.addColorStop(0.5,'#1b3a5c');
+  g.addColorStop(1,'#2a6c8f');
+  X.fillStyle=g;
+  R(0,0,W,GY,g);
+  // 星星闪烁
+  for(const s of stars){
+    s.tw+=0.03;
+    const a=0.3+Math.sin(s.tw)*0.4;
+    X.fillStyle='rgba(255,255,255,'+a.toFixed(2)+')';
+    X.fillRect(s.x,s.y,s.r,s.r);
+  }
+  // 极光
+  X.fillStyle='rgba(80,200,160,.08)';
+  for(let i=0;i<3;i++){
+    const ay=20+i*8;
+    X.beginPath();
+    X.moveTo(0,ay);
+    for(let x=0;x<=W;x+=10){
+      X.lineTo(x,ay+Math.sin(t*0.01+x*0.02+i)*6);
+    }
+    X.lineTo(W,0);X.lineTo(0,0);
+    X.fill();
+  }
+}
+
+function drawSnow(){
+  for(const f of snow){
+    X.fillStyle='rgba(255,255,255,'+(0.5+f.r*0.15).toFixed(2)+')';
+    X.beginPath();
+    X.arc(f.x,f.y,f.r,0,Math.PI*2);
+    X.fill();
+    f.y+=f.sy;
+    f.x+=f.sx+Math.sin(f.y*0.02)*0.3;
+    if(f.y>H)snow.splice(snow.indexOf(f),1);
+  }
+}
+
+function drawScore(){
+  X.fillStyle='rgba(255,255,255,.7)';
+  X.font='bold 14px "Segoe UI",monospace';
+  X.textAlign='right';
+  X.fillText(String(score).padStart(5,'0'),W-12,22);
+  X.textAlign='left';
+}
+
+function gameOver(){
+  dead=true;
+  hi=Math.max(hi,score);
+  localStorage.hi=hi;
+  document.getElementById('hi').textContent=hi;
+}
+
+function drawGameOver(){
+  X.fillStyle='rgba(0,0,0,.5)';
+  R(0,0,W,H,'rgba(0,0,0,.3)');
+  X.fillStyle='#fff';
+  X.font='bold 20px "Segoe UI",sans-serif';
+  X.textAlign='center';
+  X.fillText('Game Over',W/2,H/2-8);
+  X.font='13px "Segoe UI",sans-serif';
+  X.fillStyle='rgba(255,255,255,.7)';
+  X.fillText('按空格再来一局',W/2,H/2+16);
+  X.textAlign='left';
+}
+
+function hit(o){
+  let dx=bear.x,dy,dw,dh;
+  if(bear.duck){dw=DW;dy=GY-DH;dh=DH}
+  else{dw=BW;dy=bear.y;dh=BH}
+  // 碰撞框略小，更宽容
+  return dx+3<o.x+o.w && dx+dw-3>o.x && dy+2<o.y+o.h && dy+dh-2>o.y;
+}
+
+function loop(now){
+  if(!lastTime)lastTime=now;
+  const dt=Math.min(50,now-lastTime)/16.67;  // 标准化到60fps
+  lastTime=now;
+  t++;
+  runFrame+=dt;
+  X.clearRect(0,0,W,H);
+
+  drawBg();
+
+  if(!dead){
+    score++;
+    speed=5.5+Math.min(7,score*0.015);
+    // 物理（帧率无关）
+    bear.y+=bear.vy*dt;
+    bear.vy+=GRAV*dt;
+    if(bear.y>=GY-BH){bear.y=GY-BH;bear.vy=0;bear.jump=false}
+    spawnObs();
+    spawnSnow();
+    for(const o of obs){
+      o.x-=speed*dt;
+      if(hit(o)){gameOver();break}
+    }
+    obs=obs.filter(o=>o.x>-40);
+    document.getElementById('sc').textContent=score;
+  }
+
+  drawSnow();
+  drawGround();
+  for(const o of obs)drawObs(o);
+  drawBear();
+  drawScore();
+  if(dead)drawGameOver();
+
+  requestAnimationFrame(loop);
+}
+
+// ===== 输入 =====
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'||e.code==='ArrowUp'){e.preventDefault();jump()}
+  else if(e.code==='ArrowDown'){e.preventDefault();duck(true)}
+});
+window.addEventListener('keyup',e=>{
+  if(e.code==='ArrowDown')duck(false);
+});
+C.addEventListener('mousedown',jump);
+C.addEventListener('touchstart',e=>{e.preventDefault();jump()},{passive:false});
+
+document.getElementById('hi').textContent=hi;
+reset();
+setTimeout(()=>{const h=document.getElementById('hint');if(h)h.style.opacity='0'},3500);
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

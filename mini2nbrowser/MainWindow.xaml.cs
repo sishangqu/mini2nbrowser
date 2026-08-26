@@ -5,10 +5,13 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -23,6 +26,57 @@ using WinForms = System.Windows.Forms;
 
 namespace mini2nbrowser
 {
+    /// <summary>
+    /// 用于在 ListBox 的 ControlTemplate 内把 ListBox 的 ActualWidth 暴露给 ItemTemplate（通过 x:Name）。
+    /// WPF 不允许 DataTemplate 通过 ElementName 直接引用 ControlTemplate 中的元素，
+    /// 所以用 Freezable 作为"中间人"：它在 ControlTemplate 里订阅宽度变化，自身提供 ActualWidth，
+    /// 然后在 DataTemplate 里通过 ElementName 引用它本身即可。
+    /// </summary>
+    public class WidthProxy : Freezable
+    {
+        protected override Freezable CreateInstanceCore() => new WidthProxy();
+
+        public double ActualWidth
+        {
+            get => (double)GetValue(ActualWidthProperty);
+            private set => SetValue(ActualWidthPropertyKey, value);
+        }
+
+        private static readonly DependencyPropertyKey ActualWidthPropertyKey =
+            DependencyProperty.RegisterReadOnly(nameof(ActualWidth), typeof(double),
+                typeof(WidthProxy), new PropertyMetadata(0.0));
+
+        public static readonly DependencyProperty ActualWidthProperty =
+            ActualWidthPropertyKey.DependencyProperty;
+
+        public FrameworkElement? Source
+        {
+            get => (FrameworkElement?)GetValue(SourceProperty);
+            set => SetValue(SourceProperty, value);
+        }
+
+        public static readonly DependencyProperty SourceProperty =
+            DependencyProperty.Register(nameof(Source), typeof(FrameworkElement),
+                typeof(WidthProxy), new PropertyMetadata(null, OnSourceChanged));
+
+        private static void OnSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            var p = (WidthProxy)d;
+            if (e.OldValue is FrameworkElement oldEl)
+                oldEl.SizeChanged -= p.OnSizeChanged;
+            if (e.NewValue is FrameworkElement newEl)
+            {
+                newEl.SizeChanged += p.OnSizeChanged;
+                p.ActualWidth = newEl.ActualWidth;
+            }
+        }
+
+        private void OnSizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            ActualWidth = e.NewSize.Width;
+        }
+    }
+
     public class BoolToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
@@ -371,6 +425,13 @@ namespace mini2nbrowser
         private readonly ObservableCollection<BookmarkItem> _bookmarks = new();
         private readonly ObservableCollection<DownloadItem> _downloads = new();
         private int _activeDownloads;
+        // ===== 媒体嗅探 =====
+        private readonly MediaSniffer _mediaSniffer = new();
+        private readonly MediaDownloader _mediaDownloader = new(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "mini2nbrowser", "media_site_cache.json"));
+        private readonly Dictionary<MediaItem, System.Threading.CancellationTokenSource> _mediaDownloadCts = new();
+        private int _activeMediaDownloads;
         private readonly ObservableCollection<PasswordEntry> _passwords = new();
         private readonly List<HistoryItem> _allHistory = new();
         private string? _editingScriptId;
@@ -415,6 +476,35 @@ namespace mini2nbrowser
         private const double NavMarginExpanded = 176;
 
         private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
+
+        // ===== 地址栏联想 (v1.5.0) =====
+        private BrowserLocalDb? _localDb;
+        private readonly ObservableCollection<AddressSuggestItem> _suggestItems = new();
+        private CancellationTokenSource? _suggestCts;
+        private static readonly HttpClient _httpClient = new(new HttpClientHandler
+        {
+            UseCookies = false,
+            AllowAutoRedirect = false,
+            AutomaticDecompression = System.Net.DecompressionMethods.All
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(2),
+            DefaultRequestHeaders =
+            {
+                { "User-Agent", "mini2nbrowser/1.5 (+https://github.com/mini2nbrowser)" },
+                { "Accept-Language", "zh-CN,zh;q=0.9,en;q=0.7" }
+            }
+        };
+        private const int SuggestTakeLocalEach = 5;
+        private const int SuggestCloudTake = 10;
+        private const int SuggestDebounceMs = 250;
+
+        // SQLite 数据库路径（历史/书签）—— 按 Profile 隔离，放在 _dataDir 下
+        private string LocalDbPath => Path.Combine(_dataDir, "browser.db");
+        // 开关：是否允许云端联想（用户可设置，默认开；无痕模式自动禁用）
+        private bool EnableCloudSuggest => true;
+        // 开关：本地联想总开关
+        private bool EnableLocalSuggest => true;
 
         #region IsSidebarExpanded
         public static readonly DependencyProperty IsSidebarExpandedProperty =
@@ -569,9 +659,26 @@ namespace mini2nbrowser
             // 仅同步加载最关键的配置（决定主题/搜索引擎，影响首屏渲染）
             LoadConfig();
 
+            // ===== v1.5.0：SQLite 本地数据库（按 Profile 隔离）=====
+            try
+            {
+                _localDb = new BrowserLocalDb(LocalDbPath);
+                // JSON→SQLite 一次性迁移（只有当数据库内为空、且有旧 JSON 时执行）
+                _localDb.ImportFromJsonIfNeeded(HistoryPath, BookmarksPath);
+            }
+            catch
+            {
+                // 数据库失败不阻塞启动；所有查询自动降级为仅内存 JSON
+                _localDb = null;
+            }
+
             // 集合绑定即时完成（初始为空，开销极低）
             tabList.ItemsSource = _tabs;
             lbDownloads.ItemsSource = _downloads;
+            lbMedia.ItemsSource = _mediaSniffer.Items;
+            SuggestListBox.ItemsSource = _suggestItems;
+            _mediaSniffer.Items.CollectionChanged += (s, e) =>
+                Dispatcher.Invoke(() => mediaCountText.Text = _mediaSniffer.Items.Count > 0 ? $"({_mediaSniffer.Items.Count})" : "");
 
             ApplyTheme();
             if (_chkDarkMode != null) _chkDarkMode.IsChecked = _config.IsDarkMode;
@@ -583,8 +690,8 @@ namespace mini2nbrowser
             {
                 // 多实例时托盘提示区分 profile
                 _trayIcon.ToolTipText = string.IsNullOrEmpty(_profileName)
-                    ? "mini2n Browser v1.3.0"
-                    : $"mini2n Browser v1.3.0 [{_profileName}]";
+                    ? "mini2n Browser v1.5.0"
+                    : $"mini2n Browser v1.5.0 [{_profileName}]";
                 _trayIcon.TrayLeftMouseUp += (s, e) => RestoreFromTray();
             }
 
@@ -1237,14 +1344,16 @@ namespace mini2nbrowser
             if (string.IsNullOrEmpty(url) || url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase)) return;
 
             var existing = _bookmarks.FirstOrDefault(b => b.Url == url);
-            if (existing != null) { _bookmarks.Remove(existing); }
+            if (existing != null) { _bookmarks.Remove(existing); try { _localDb?.RemoveBookmark(url); } catch { } }
             else
             {
+                var title = string.IsNullOrEmpty(tab.Title) ? url : tab.Title;
                 _bookmarks.Insert(0, new BookmarkItem
                 {
-                    Title = string.IsNullOrEmpty(tab.Title) ? url : tab.Title,
+                    Title = title,
                     Url = url
                 });
+                try { _localDb?.AddBookmark(url, title); } catch { }
             }
             SaveBookmarks();
             UpdateBookmarkIcon(url);
@@ -1255,7 +1364,7 @@ namespace mini2nbrowser
             if (sender is Button btn && btn.Tag is string url)
             {
                 var bm = _bookmarks.FirstOrDefault(b => b.Url == url);
-                if (bm != null) { _bookmarks.Remove(bm); SaveBookmarks(); }
+                if (bm != null) { _bookmarks.Remove(bm); SaveBookmarks(); try { _localDb?.RemoveBookmark(url); } catch { } }
                 var tab = tabList.SelectedItem as TabInfo;
                 if (tab != null && _webViews.TryGetValue(tab.Id, out var wv) && wv.CoreWebView2 != null)
                     UpdateBookmarkIcon(wv.CoreWebView2.Source);
@@ -1425,6 +1534,120 @@ namespace mini2nbrowser
             };
         }
 
+        #region 媒体嗅探
+        private void SetupMediaSniffer(Microsoft.Web.WebView2.Wpf.WebView2 wv)
+        {
+            // WebResourceResponseReceived：响应阶段触发，能拿到 Content-Type，无需注册 filter，性能开销小
+            _mediaSniffer.Attach(wv.CoreWebView2, () =>
+            {
+                try
+                {
+                    if (wv.CoreWebView2 == null) return ("", "");
+                    return (wv.CoreWebView2.DocumentTitle ?? "", wv.CoreWebView2.Source ?? "");
+                }
+                catch { return ("", ""); }
+            });
+        }
+
+        private void BtnMediaSniffer_Click(object sender, RoutedEventArgs e)
+        {
+            mediaSnifferOverlay.Visibility = mediaSnifferOverlay.Visibility == Visibility.Visible
+                ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        private void BtnCloseMediaSniffer_Click(object sender, RoutedEventArgs e)
+            => mediaSnifferOverlay.Visibility = Visibility.Collapsed;
+
+        private void MediaSnifferOverlay_MouseDown(object sender, MouseButtonEventArgs e)
+            => mediaSnifferOverlay.Visibility = Visibility.Collapsed;
+
+        private void BtnClearMediaList_Click(object sender, RoutedEventArgs e)
+            => _mediaSniffer.Clear();
+
+        private void BtnRemoveMedia_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.Tag is MediaItem item)
+            {
+                if (_mediaDownloadCts.TryGetValue(item, out var cts))
+                {
+                    cts.Cancel();
+                    _mediaDownloadCts.Remove(item);
+                }
+                _mediaSniffer.Remove(item);
+            }
+        }
+
+        private async void BtnDownloadMedia_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button btn || btn.Tag is not MediaItem item) return;
+            if (item.Status == "下载中") return;
+
+            var ext = string.IsNullOrEmpty(item.Ext) ? "bin" : item.Ext;
+            if (item.Ext.Equals("m3u8", StringComparison.OrdinalIgnoreCase)) ext = "ts";
+            var baseName = "media_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            var sfd = new Microsoft.Win32.SaveFileDialog
+            {
+                FileName = $"{baseName}.{ext}",
+                Filter = $"{ext.ToUpper()} 文件|*.{ext}|所有文件|*.*"
+            };
+            if (sfd.ShowDialog() != true) return;
+
+            var path = sfd.FileName;
+            var cts = new System.Threading.CancellationTokenSource();
+            _mediaDownloadCts[item] = cts;
+            item.Status = "下载中";
+            item.Progress = 0;
+            _activeMediaDownloads++;
+            UpdateMediaBadge();
+
+            try
+            {
+                // MediaDownloader 内部会直接更新 item 各字段（Status/Progress/Speed/Eta/Threads...）
+                var progress = new Progress<MediaDownloadProgress>(_ => { });
+                await _mediaDownloader.DownloadAsync(item, path, progress, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                item.Status = "已取消";
+            }
+            catch (NotSupportedException ex)
+            {
+                item.Status = "不支持";
+                System.Windows.MessageBox.Show(ex.Message, "无法下载", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            catch (Exception ex)
+            {
+                item.Status = "失败";
+                System.Windows.MessageBox.Show($"下载失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                _activeMediaDownloads = Math.Max(0, _activeMediaDownloads - 1);
+                UpdateMediaBadge();
+                _mediaDownloadCts.Remove(item);
+            }
+        }
+
+        private void BtnCopyMediaUrl_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.Tag is MediaItem item)
+            {
+                try { System.Windows.Clipboard.SetText(item.Url); } catch { }
+            }
+        }
+
+        private void UpdateMediaBadge()
+        {
+            if (mediaBadge == null || mediaBadgeText == null) return;
+            if (_activeMediaDownloads > 0)
+            {
+                mediaBadge.Visibility = Visibility.Visible;
+                mediaBadgeText.Text = _activeMediaDownloads > 9 ? "9+" : _activeMediaDownloads.ToString();
+            }
+            else mediaBadge.Visibility = Visibility.Collapsed;
+        }
+        #endregion
+
         /// <summary>下载完成时右下角弹出短暂通知</summary>
         private async void ShowDownloadToast(DownloadItem item)
         {
@@ -1530,6 +1753,8 @@ namespace mini2nbrowser
             _allHistory.Insert(0, new HistoryItem { Url = url, Title = string.IsNullOrEmpty(title) ? url : title, VisitedAt = DateTime.Now });
             if (_allHistory.Count > 500) _allHistory.RemoveRange(500, _allHistory.Count - 500);
             SaveHistory();
+            // v1.5.0：同步写入 SQLite（联想主索引）
+            try { _localDb?.AddHistory(url, title); } catch { }
             RefreshHistoryList(null);
         }
 
@@ -1551,6 +1776,7 @@ namespace mini2nbrowser
             if (MessageBox.Show("确定清除所有历史记录？", "确认", MessageBoxButton.YesNo) == MessageBoxResult.Yes)
             {
                 _allHistory.Clear(); _history.Clear(); SaveHistory();
+                try { _localDb?.ClearHistory(); } catch { }
             }
         }
 
@@ -1879,6 +2105,7 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
 
         #region 标签页管理
         private static string? _homePageTempPath;
+        private static string? _dinoGameTempPath;
 
         /// <summary>将内嵌的 HomePage.html 解压到临时目录（仅首次），返回文件路径</summary>
         private static string EnsureHomePage()
@@ -1895,6 +2122,24 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                 stream.CopyTo(fs);
             }
             _homePageTempPath = path;
+            return path;
+        }
+
+        /// <summary>将内嵌的 DinoGame.html 解压到临时目录（仅首次），返回 file:// URL</summary>
+        private static string EnsureDinoGame()
+        {
+            if (_dinoGameTempPath != null) return _dinoGameTempPath;
+            var dir = Path.Combine(Path.GetTempPath(), "mini2nbrowser");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, "DinoGame.html");
+            using var stream = typeof(MainWindow).Assembly
+                .GetManifestResourceStream("mini2nbrowser.DinoGame.html");
+            if (stream != null)
+            {
+                using var fs = File.Create(path);
+                stream.CopyTo(fs);
+            }
+            _dinoGameTempPath = path;
             return path;
         }
 
@@ -1977,6 +2222,7 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             SetupPasswordCapture(wv);
             SetupProtection(wv);
             SetupDownloads(wv);
+            SetupMediaSniffer(wv);
             SetupPdfHandling(wv, tab);
 
             wv.CoreWebView2.DocumentTitleChanged += (s, e) =>
@@ -2029,6 +2275,27 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                 Dispatcher.Invoke(() =>
                 {
                     tab.LastActiveTime = DateTime.Now;
+
+                    // ===== 离线检测：导航失败（断网/DNS失败/服务器拒绝）→ 显示小恐龙游戏 =====
+                    if (!e.IsSuccess)
+                    {
+                        var curSrc = wv.CoreWebView2.Source ?? "";
+                        // 已经在游戏页/主页 → 不再重复跳转（防止死循环）
+                        if (curSrc.Contains("DinoGame.html", StringComparison.OrdinalIgnoreCase)
+                            || curSrc.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase))
+                        {
+                            btnStop.Visibility = Visibility.Collapsed;
+                            btnReload.Visibility = Visibility.Visible;
+                            return;
+                        }
+                        wv.CoreWebView2.Navigate("file:///" + EnsureDinoGame().Replace('\\', '/'));
+                        tab.Title = "离线了 — 小恐龙游戏";
+                        if (tabList.SelectedItem == tab) UpdatePageTitle(tab.Title);
+                        btnStop.Visibility = Visibility.Collapsed;
+                        btnReload.Visibility = Visibility.Visible;
+                        return;
+                    }
+
                     if (tabList.SelectedItem == tab)
                     {
                         var url = wv.CoreWebView2.Source;
@@ -4106,6 +4373,336 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             if (tab != null && _webViews.TryGetValue(tab.Id, out var wv) && wv.CoreWebView2 != null)
                 wv.CoreWebView2.Stop();
         }
+
+        // ========== 地址栏联想 (v1.5.0) ==========
+
+        /// <summary>
+        /// 地址栏文本变化：
+        ///  1. 立刻本地 SQLite 查询（同步，无网络，毫秒级）
+        ///  2. 防抖 250ms 后发起云端联想（失败静默，仅保留本地）
+        ///  3. 每次输入立即取消上次云端请求，解决竞态覆盖
+        /// </summary>
+        private async void TxtUrl_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            // 用户在 Popup 内键盘选择时，TxtUrl 会被 SetText 再次触发；此时不重开 Popup
+            if (_suppressTextChanged)
+            {
+                _suppressTextChanged = false;
+                return;
+            }
+
+            var text = txtUrl.Text?.Trim() ?? "";
+            _suggestItems.Clear();
+            SuggestPopup.IsOpen = false;
+            if (string.IsNullOrEmpty(text))
+            {
+                _suggestCts?.Cancel();
+                return;
+            }
+
+            // 先出本地结果（书签>历史 优先级由 QueryLocalSuggest 内部保证）
+            List<AddressSuggestItem> localCandidates = new();
+            if (EnableLocalSuggest && _localDb != null)
+            {
+                try
+                {
+                    localCandidates = _localDb.QueryLocalSuggest(text, SuggestTakeLocalEach);
+                }
+                catch { /* 数据库异常：降级为仅云端 */ }
+            }
+            else if (EnableLocalSuggest)
+            {
+                // SQLite 不可用，退回到内存中历史/书签
+                localCandidates = FallbackQueryLocalFromMemory(text, SuggestTakeLocalEach);
+            }
+            foreach (var it in localCandidates) _suggestItems.Add(it);
+
+            if (_suggestItems.Count > 0)
+            {
+                OpenSuggestPopup();
+                SuggestListBox.SelectedIndex = -1;
+            }
+
+            // ========== 云端联想（防抖 250ms + 取消上一次）==========
+            _suggestCts?.Cancel();
+            _suggestCts = new CancellationTokenSource();
+            var token = _suggestCts.Token;
+
+            // 无痕模式或开关关闭时，不发网络（直接保留本地候选）
+            bool isIncognito = tabList.SelectedItem is TabInfo t && t.IsIncognito;
+            if (!EnableCloudSuggest || isIncognito) return;
+
+            try
+            {
+                await Task.Delay(SuggestDebounceMs, token).ConfigureAwait(true);
+                if (token.IsCancellationRequested) return;
+
+                // 默认引擎有 SuggestUrl 就用对应引擎，否则百度兜底（覆盖面更广）
+                SearchEngine? defaultEngine = _config.SearchEngines.FirstOrDefault(x => x.Name == _config.DefaultEngine)
+                    ?? _config.SearchEngines.FirstOrDefault();
+                List<AddressSuggestItem> cloud;
+                if (defaultEngine != null && !string.IsNullOrWhiteSpace(defaultEngine.SuggestUrl)
+                    && defaultEngine.SuggestUrl.Contains("%s"))
+                {
+                    cloud = await FetchEngineSuggest(defaultEngine, text, token).ConfigureAwait(true);
+                }
+                else
+                {
+                    cloud = await FetchBaiduSuggest(text, token).ConfigureAwait(true);
+                }
+
+                if (token.IsCancellationRequested) return;
+
+                // 合并云端（去重：URL 唯一；纯搜索词 Url=生成链接，也和本地不重叠）
+                var existUrls = new HashSet<string>(
+                    _suggestItems.Select(x => x.Url), StringComparer.OrdinalIgnoreCase);
+                int added = 0;
+                foreach (var s in cloud)
+                {
+                    if (added >= SuggestCloudTake) break;
+                    if (existUrls.Add(s.Url))
+                    {
+                        _suggestItems.Add(s);
+                        added++;
+                    }
+                }
+
+                if (_suggestItems.Count > 0)
+                {
+                    OpenSuggestPopup();
+                    if (SuggestListBox.SelectedIndex < 0 && localCandidates.Count == 0)
+                        SuggestListBox.SelectedIndex = 0; // 仅有云端结果时默认首项
+                }
+            }
+            catch (TaskCanceledException) { /* 用户继续输入 / 超时：取消，正常 */ }
+            catch (OperationCanceledException) { /* 用户继续输入，正常 */ }
+            catch (HttpRequestException) { /* 网络失败：保持本地 */ }
+            catch { /* 其他异常：静默 */ }
+        }
+
+        private bool _suppressTextChanged;
+
+        private void OpenSuggestPopup()
+        {
+            try
+            {
+                // 让 Popup 宽度跟随地址栏
+                if (SuggestPopup.Child is Border b)
+                    b.Width = Math.Max(txtUrl.ActualWidth, 480);
+                SuggestPopup.IsOpen = true;
+            }
+            catch { }
+        }
+
+        private void TxtUrl_LostFocus(object sender, RoutedEventArgs e)
+        {
+            // 点击 Popup 中的项时也会触发 LostFocus；延迟一小会儿关闭，
+            // 让 SelectionChanged 先处理，之后再关
+            if (SuggestPopup.IsKeyboardFocusWithin || SuggestListBox.IsMouseOver) return;
+            SuggestPopup.IsOpen = false;
+        }
+
+        /// <summary>当 SQLite 不可用时回退到内存 JSON 做联想</summary>
+        private List<AddressSuggestItem> FallbackQueryLocalFromMemory(string keyword, int take)
+        {
+            var list = new List<AddressSuggestItem>();
+            var kw = keyword.Trim();
+            // 书签优先
+            foreach (var bm in _bookmarks
+                         .Where(b =>
+                             (!string.IsNullOrEmpty(b.Title) && b.Title.Contains(kw, StringComparison.OrdinalIgnoreCase))
+                             || (!string.IsNullOrEmpty(b.Url) && b.Url.Contains(kw, StringComparison.OrdinalIgnoreCase)))
+                         .Take(take))
+            {
+                list.Add(new AddressSuggestItem
+                {
+                    Text = string.IsNullOrWhiteSpace(bm.Title) ? bm.Url : bm.Title,
+                    Url = bm.Url,
+                    Source = SuggestSource.LocalBookmark
+                });
+            }
+            foreach (var h in _allHistory
+                         .Where(h =>
+                             (!string.IsNullOrEmpty(h.Title) && h.Title.Contains(kw, StringComparison.OrdinalIgnoreCase))
+                             || (!string.IsNullOrEmpty(h.Url) && h.Url.Contains(kw, StringComparison.OrdinalIgnoreCase)))
+                         .Take(take))
+            {
+                list.Add(new AddressSuggestItem
+                {
+                    Text = string.IsNullOrWhiteSpace(h.Title) ? h.Url : h.Title,
+                    Url = h.Url,
+                    Source = SuggestSource.LocalHistory
+                });
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// 按当前默认引擎的 SuggestUrl 调用云端联想。
+        /// 百度特殊处理（JSONP），其他走普通 JSON（Bing osjson、搜狗 suggest、360 suggest 等）。
+        /// 调用失败时抛异常，由上层统一"保留本地结果静默降级"。
+        /// </summary>
+        private async Task<List<AddressSuggestItem>> FetchEngineSuggest(SearchEngine engine, string keyword, CancellationToken ct)
+        {
+            var url = engine.SuggestUrl.Replace("%s", Uri.EscapeDataString(keyword));
+            // 百度：特殊 JSONP 格式（window.baidu.sug({...})），兜底函数
+            if (!string.IsNullOrWhiteSpace(engine.Name) &&
+                (engine.Name == "百度" || url.Contains("suggestion.baidu.com", StringComparison.OrdinalIgnoreCase)))
+                return await FetchBaiduSuggest(keyword, ct).ConfigureAwait(false);
+
+            string resp = await _httpClient.GetStringAsync(url, ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(resp)) return new List<AddressSuggestItem>();
+            var result = new List<AddressSuggestItem>();
+
+            using var doc = JsonDocument.Parse(resp);
+            var root = doc.RootElement;
+            IEnumerable<JsonElement>? arr = null;
+            switch (root.ValueKind)
+            {
+                case JsonValueKind.Array:
+                    // 必应 osjson：["query",["word1","word2",...]]
+                    if (root.GetArrayLength() >= 2 && root[1].ValueKind == JsonValueKind.Array)
+                        arr = root[1].EnumerateArray();
+                    else
+                        arr = root.EnumerateArray();
+                    break;
+                case JsonValueKind.Object:
+                    if (root.TryGetProperty("s", out var sArr) && sArr.ValueKind == JsonValueKind.Array)
+                        arr = sArr.EnumerateArray();
+                    break;
+            }
+            if (arr == null) return result;
+            foreach (var e in arr)
+            {
+                string? word = e.ValueKind switch
+                {
+                    JsonValueKind.String => e.GetString(),
+                    JsonValueKind.Object => (e.TryGetProperty("q", out var q) ? q.GetString() :
+                                             e.TryGetProperty("keyword", out var k) ? k.GetString() :
+                                             e.TryGetProperty("word", out var w) ? w.GetString() : null),
+                    _ => null
+                };
+                if (string.IsNullOrWhiteSpace(word)) continue;
+                var searchUrl = (engine.SearchUrl?.Contains("%s") ?? false)
+                    ? engine.SearchUrl.Replace("%s", Uri.EscapeDataString(word))
+                    : $"https://www.baidu.com/s?wd={Uri.EscapeDataString(word)}";
+                result.Add(new AddressSuggestItem
+                {
+                    Text = word,
+                    Url = searchUrl,
+                    Source = SuggestSource.CloudSearch
+                });
+            }
+            return result;
+        }
+
+        /// <summary>百度联想（非官方接口，JSONP）</summary>
+        private async Task<List<AddressSuggestItem>> FetchBaiduSuggest(string keyword, CancellationToken ct)
+        {
+            var url = $"https://suggestion.baidu.com/su?wd={Uri.EscapeDataString(keyword)}&json=1";
+            var resp = await _httpClient.GetStringAsync(url, ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(resp)) return new List<AddressSuggestItem>();
+            // 百度返回：window.baidu.sug({...})
+            int start = resp.IndexOf('{');
+            int end = resp.LastIndexOf('}');
+            if (start < 0 || end < 0 || end <= start) return new List<AddressSuggestItem>();
+            var json = resp.Substring(start, end - start + 1);
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("s", out var sArr) || sArr.ValueKind != JsonValueKind.Array)
+                return new List<AddressSuggestItem>();
+            var result = new List<AddressSuggestItem>();
+            foreach (var e in sArr.EnumerateArray())
+            {
+                var word = e.GetString();
+                if (string.IsNullOrWhiteSpace(word)) continue;
+                result.Add(new AddressSuggestItem
+                {
+                    Text = word,
+                    Url = $"https://www.baidu.com/s?wd={Uri.EscapeDataString(word)}",
+                    Source = SuggestSource.CloudSearch
+                });
+            }
+            return result;
+        }
+
+        // ===== Popup 键盘导航（与 Edge 对齐）：↑↓ 移动、Enter 跳转、Esc 关闭、Tab 关闭 =====
+
+        protected override void OnPreviewKeyDown(KeyEventArgs e)
+        {
+            base.OnPreviewKeyDown(e);
+            if (!SuggestPopup.IsOpen) return;
+
+            switch (e.Key)
+            {
+                case Key.Escape:
+                    SuggestPopup.IsOpen = false;
+                    e.Handled = true;
+                    return;
+                case Key.Down:
+                    if (_suggestItems.Count == 0) return;
+                    if (SuggestListBox.SelectedIndex < _suggestItems.Count - 1)
+                        SuggestListBox.SelectedIndex++;
+                    else
+                        SuggestListBox.SelectedIndex = 0;
+                    SuggestListBox.ScrollIntoView(SuggestListBox.SelectedItem);
+                    e.Handled = true;
+                    return;
+                case Key.Up:
+                    if (_suggestItems.Count == 0) return;
+                    if (SuggestListBox.SelectedIndex <= 0)
+                        SuggestListBox.SelectedIndex = _suggestItems.Count - 1;
+                    else
+                        SuggestListBox.SelectedIndex--;
+                    SuggestListBox.ScrollIntoView(SuggestListBox.SelectedItem);
+                    e.Handled = true;
+                    return;
+                case Key.Enter:
+                    if (SuggestListBox.SelectedItem is AddressSuggestItem sel)
+                    {
+                        ApplySuggestItem(sel);
+                        e.Handled = true;
+                    }
+                    return;
+                case Key.Tab:
+                    SuggestPopup.IsOpen = false;
+                    return;
+            }
+        }
+
+        private void SuggestListBox_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            // ListBox 中键盘事件仍交给窗口统一处理；防止 ListBox 吞掉 Enter/ESC
+            if (e.Key == Key.Enter || e.Key == Key.Escape)
+            {
+                OnPreviewKeyDown(e);
+                e.Handled = true;
+            }
+        }
+
+        private void SuggestListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            // 鼠标单击（不按键盘时）：立即应用候选项
+            if (e.AddedItems.Count == 0) return;
+            if (SuggestListBox.SelectedItem is not AddressSuggestItem it) return;
+            // 只响应鼠标点击触发的 SelectionChanged：如果键盘焦点仍在地址栏里且是键盘选到的就先别跳转
+            if (SuggestListBox.IsMouseOver || Mouse.LeftButton == MouseButtonState.Released && Keyboard.FocusedElement is ListBoxItem)
+            {
+                ApplySuggestItem(it);
+            }
+        }
+
+        /// <summary>把候选项应用到地址栏并导航</summary>
+        private void ApplySuggestItem(AddressSuggestItem it)
+        {
+            SuggestPopup.IsOpen = false;
+            // 云端搜索词：直接跳转到生成的搜索 URL
+            // 本地历史/书签：也跳 Url；并且把输入框文字设置为 URL 看起来更顺
+            _suppressTextChanged = true;
+            txtUrl.Text = it.Url;
+            txtUrl.SelectionStart = txtUrl.Text.Length;
+            Navigate(it.Url);
+        }
+
         #endregion
 
         #region 用户管理（profile 切换/新建/删除）
