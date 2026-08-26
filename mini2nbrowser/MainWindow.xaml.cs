@@ -919,6 +919,7 @@ namespace mini2nbrowser
                 if (e.Key == Key.W) { CloseCurrentTab(); e.Handled = true; }
                 else if (e.Key == Key.T) { NewTab(); e.Handled = true; }
                 else if (e.Key == Key.D) { ToggleBookmark(); e.Handled = true; }
+                else if (e.Key == Key.F) { OpenFindBar(); e.Handled = true; }
             }
             // Ctrl+Shift+N：新建无痕标签页
             else if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && e.Key == Key.N)
@@ -926,6 +927,208 @@ namespace mini2nbrowser
                 NewIncognitoTab();
                 e.Handled = true;
             }
+            // F11 全屏切换（v1.8）
+            else if (e.Key == Key.F11)
+            {
+                ToggleFullscreen();
+                e.Handled = true;
+            }
+            // F3 / Shift+F3 查找导航（v1.8）
+            else if (e.Key == Key.F3)
+            {
+                if (findBar.Visibility == Visibility.Visible)
+                {
+                    FindInPage(findInput.Text, Keyboard.Modifiers == ModifierKeys.Shift ? false : true);
+                    e.Handled = true;
+                }
+            }
+        }
+
+        // ===== 页内查找（v1.8 新增）=====
+        // 使用 window.find()（Chromium 支持）+ 高亮滚动到匹配项；状态显示 "x / y"。
+        // 说明：window.find 是非标准但 Chromium 系浏览器一致支持，实现最简。
+        private int _findTotal = 0;
+        private int _findIdx = 0;
+        private string _findQuery = "";
+
+        private void OpenFindBar()
+        {
+            findBar.Visibility = Visibility.Visible;
+            findInput.Text = "";
+            findStatus.Text = "";
+            Keyboard.Focus(findInput);
+        }
+
+        private void BtnFindClose_Click(object sender, RoutedEventArgs e)
+        {
+            findBar.Visibility = Visibility.Collapsed;
+            // 清除高亮
+            _ = ExecuteScriptSafe("try{var s=window.getSelection();s.removeAllRanges();}catch(e){}");
+        }
+
+        private async void FindInput_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                await FindInPageAsync(findInput.Text, true);
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape)
+            {
+                findBar.Visibility = Visibility.Collapsed;
+                _ = ExecuteScriptSafe("try{var s=window.getSelection();s.removeAllRanges();}catch(e){}");
+                e.Handled = true;
+            }
+        }
+
+        private async void BtnFindNext_Click(object sender, RoutedEventArgs e)
+            => await FindInPageAsync(findInput.Text, true);
+
+        private async void BtnFindPrev_Click(object sender, RoutedEventArgs e)
+            => await FindInPageAsync(findInput.Text, false);
+
+        private void FindInPage(string query, bool forward)
+        {
+            // 同步包装：调用 async 版本（旧接口供 F3 使用）
+            _ = FindInPageAsync(query, forward);
+        }
+
+        private async Task FindInPageAsync(string query, bool forward)
+        {
+            if (string.IsNullOrEmpty(query))
+            {
+                findStatus.Text = "";
+                _findTotal = 0; _findIdx = 0; _findQuery = "";
+                return;
+            }
+
+            if (tabList.SelectedItem is not TabInfo tab) return;
+            if (!_webViews.TryGetValue(tab.Id, out var wv) || wv.CoreWebView2 == null) return;
+
+            try
+            {
+                // 查询总数 + 高亮当前匹配（用 countMatches 计算总数，用 window.find 定位）
+                var safeQuery = System.Text.Json.JsonEncodedText.Encode(query);
+                var js = $@"(function(q, fwd){{
+                    try {{
+                        var body = document.body;
+                        if (!body) return {{total:0, idx:0}};
+                        var txt = body.innerText || '';
+                        var lower = txt.toLowerCase();
+                        var ql = q.toLowerCase();
+                        var total = 0;
+                        var pos = 0;
+                        while ((pos = lower.indexOf(ql, pos)) !== -1) {{ total++; pos += ql.length; }}
+                        var found = window.find(q, false, !fwd, false, true, false, false);
+                        var sel = window.getSelection();
+                        var idx = -1;
+                        if (sel && sel.rangeCount > 0 && found) {{
+                            var r = sel.getRangeAt(0);
+                            var upto = body.innerText.substring(0, r.startOffset > 0 ? r.startOffset : 0).toLowerCase();
+                            idx = upto.split(ql).length - 1;
+                            if (idx > total) idx = total;
+                        }}
+                        return {{total: total, idx: idx < 0 ? 0 : idx}};
+                    }} catch(e) {{ return {{total:0, idx:0, err: e.message}}; }}
+                }})({safeQuery.Value}, {(forward ? "true" : "false")})";
+
+                var res = await wv.CoreWebView2.ExecuteScriptAsync(js);
+                int total = 0, idx = 0;
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(res);
+                    if (doc.RootElement.TryGetProperty("total", out var t)) total = t.GetInt32();
+                    if (doc.RootElement.TryGetProperty("idx", out var i)) idx = i.GetInt32();
+                }
+                catch { }
+
+                _findTotal = total; _findIdx = idx; _findQuery = query;
+                findStatus.Text = total > 0 ? $"{idx + 1}/{total}" : "0/0";
+            }
+            catch { findStatus.Text = "?"; }
+        }
+
+        private Microsoft.Web.WebView2.Core.CoreWebView2? CurrentCore()
+        {
+            if (tabList.SelectedItem is not TabInfo tab) return null;
+            return _webViews.TryGetValue(tab.Id, out var wv) ? wv.CoreWebView2 : null;
+        }
+
+        private async Task ExecuteScriptSafe(string js)
+        {
+            try
+            {
+                if (tabList.SelectedItem is TabInfo tab && _webViews.TryGetValue(tab.Id, out var wv) && wv.CoreWebView2 != null)
+                    await wv.CoreWebView2.ExecuteScriptAsync(js);
+            }
+            catch { }
+        }
+
+        // ===== 全屏模式（v1.8 新增）=====
+        // 使用 WindowStyle=None + WindowState=Maximized 实现无边框全屏。
+        private bool _isFullscreen = false;
+        private WindowStyle _prevStyle;
+        private WindowState _prevState;
+
+        private void BtnToggleFullscreen_Click(object sender, RoutedEventArgs e) => ToggleFullscreen();
+
+        private void ToggleFullscreen()
+        {
+            if (!_isFullscreen)
+            {
+                _prevStyle = WindowStyle;
+                _prevState = WindowState;
+                WindowStyle = WindowStyle.None;
+                WindowState = WindowState.Maximized;
+                _isFullscreen = true;
+                // 隐藏标题栏等装饰可按需扩展
+            }
+            else
+            {
+                WindowStyle = _prevStyle;
+                WindowState = _prevState;
+                _isFullscreen = false;
+            }
+        }
+
+        // ===== 强制暗色网页（v1.8 新增）=====
+        // 在当前标签注入 CSS filter: invert，使浅色网页瞬间变暗。
+        // 不修改原页面 DOM 结构，再次切换可移除。
+        private const string ForceDarkScript = @"
+            (function(){
+                var id = '__mini2n_force_dark';
+                var s = document.getElementById(id);
+                if (s) { s.remove(); return false; }
+                s = document.createElement('style');
+                s.id = id;
+                s.textContent = `
+                    html { filter: invert(0.92) hue-rotate(180deg) brightness(1.05) contrast(0.95) !important; background: #fff; }
+                    img, picture, video, iframe, canvas, svg, [style*=""background:url""] { filter: invert(0.92) hue-rotate(180deg) !important; }
+                    * { box-shadow: none !important; text-shadow: none !important; }
+                `;
+                (document.head || document.documentElement).appendChild(s);
+                return true;
+            })();";
+
+        private void MenuForceDark_Click(object sender, RoutedEventArgs e)
+        {
+            // 异步注入；返回 true = 已启用，false = 已移除
+            _ = ForceDarkToggleAsync();
+        }
+
+        private async Task ForceDarkToggleAsync()
+        {
+            try
+            {
+                if (tabList.SelectedItem is not TabInfo tab) return;
+                if (!_webViews.TryGetValue(tab.Id, out var wv) || wv.CoreWebView2 == null) return;
+                var res = await wv.CoreWebView2.ExecuteScriptAsync(ForceDarkScript);
+                bool enabled = false;
+                try { using var doc = System.Text.Json.JsonDocument.Parse(res); enabled = doc.RootElement.GetBoolean(); }
+                catch { }
+                menuForceDark.IsChecked = enabled;
+            }
+            catch { }
         }
 
         // ===== 鼠标手势（v1.7 新增）=====

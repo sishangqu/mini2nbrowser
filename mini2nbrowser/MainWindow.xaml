@@ -309,6 +309,10 @@
                             <Separator/>
                             <MenuItem Header="打开本地 PDF..." Click="BtnOpenPdf_Click"/>
                             <MenuItem Header="网页截图（整页）..." Click="BtnCapturePage_Click"/>
+                            <MenuItem Header="全屏模式" InputGestureText="F11" Click="BtnToggleFullscreen_Click"/>
+                            <Separator/>
+                            <MenuItem x:Name="menuForceDark" Header="强制暗色网页（当前标签）" IsCheckable="True" Click="MenuForceDark_Click"/>
+                            <Separator/>
                             <MenuItem Header="密码管理" Click="BtnPasswords_Click"/>
                             <MenuItem Header="扩展管理" Click="BtnExtensions_Click"/>
                             <Separator/>
@@ -750,6 +754,42 @@
             <!-- 网页区域 -->
             <Grid x:Name="webArea" Margin="38,6,6,6">
                 <Grid x:Name="webViewContainer"/>
+                <!-- 页内查找栏（v1.8 新增）：右上浮层 -->
+                <Border x:Name="findBar" HorizontalAlignment="Right" VerticalAlignment="Top"
+                        Visibility="Collapsed" Margin="0,6,6,0"
+                        Background="{DynamicResource ToolbarBg}"
+                        BorderBrush="{DynamicResource BorderColor}" BorderThickness="1"
+                        CornerRadius="8" Padding="6,4" Panel.ZIndex="100">
+                    <DockPanel>
+                        <Button x:Name="btnFindClose" DockPanel.Dock="Right" Width="22" Height="22"
+                                ToolTip="关闭查找（Esc）" Click="BtnFindClose_Click"
+                                Background="Transparent" BorderThickness="0">
+                            <Path Width="10" Height="10" Stretch="Uniform"
+                                  Fill="{DynamicResource TextColor}"
+                                  Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                        </Button>
+                        <TextBlock x:Name="findStatus" DockPanel.Dock="Right"
+                                   VerticalAlignment="Center" Margin="6,0,6,0"
+                                   FontSize="11" Foreground="{DynamicResource SecondaryText}"/>
+                        <Button x:Name="btnFindPrev" DockPanel.Dock="Right" Width="22" Height="22"
+                                ToolTip="上一个 (Shift+F3)" Click="BtnFindPrev_Click"
+                                Background="Transparent" BorderThickness="0">
+                            <Path Width="10" Height="10" Stretch="Uniform"
+                                  Fill="{DynamicResource TextColor}"
+                                  Data="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z"/>
+                        </Button>
+                        <Button x:Name="btnFindNext" DockPanel.Dock="Right" Width="22" Height="22"
+                                ToolTip="下一个 (F3)" Click="BtnFindNext_Click"
+                                Background="Transparent" BorderThickness="0">
+                            <Path Width="10" Height="10" Stretch="Uniform"
+                                  Fill="{DynamicResource TextColor}"
+                                  Data="M7.41 8.59L12 13.17l4.59-4.58L18 9l-6 6-6-6z"/>
+                        </Button>
+                        <TextBox x:Name="findInput" Width="200" Margin="0,0,4,0"
+                                 Padding="6,3" FontSize="13"
+                                 KeyDown="FindInput_KeyDown"/>
+                    </DockPanel>
+                </Border>
                 <!-- PDF 侧边批注面板：右侧浮层，WPF 原生实现，跟随窗口 -->
                 <Grid x:Name="pdfSidePanel" HorizontalAlignment="Right" VerticalAlignment="Stretch"
                       Width="0" Visibility="Collapsed"
