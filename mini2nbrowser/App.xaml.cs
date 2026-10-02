@@ -12,6 +12,9 @@ namespace mini2nbrowser
 {
     public partial class App : Application
     {
+        /// <summary>应用版本号（与 csproj Version 保持一致，单一定义来源）</summary>
+        public const string Version = "1.9.1";
+
         private Mutex? _appMutex;
         private CancellationTokenSource? _pipeCts;
         private bool _ownsMutex;
@@ -37,13 +40,13 @@ namespace mini2nbrowser
 
         private static string MutexName =>
             string.IsNullOrEmpty(ProfileName)
-                ? "mini2nbrowser-Browser-v1.3.0-Unique"
-                : $"mini2nbrowser-Browser-v1.3.0-Profile-{ProfileName}";
+                ? $"mini2nbrowser-Browser-v{Version}-Unique"
+                : $"mini2nbrowser-Browser-v{Version}-Profile-{ProfileName}";
 
         private static string PipeName =>
             string.IsNullOrEmpty(ProfileName)
-                ? "mini2nbrowser-restore-v1.3.0"
-                : $"mini2nbrowser-restore-v1.3.0-{ProfileName}";
+                ? $"mini2nbrowser-restore-v{Version}"
+                : $"mini2nbrowser-restore-v{Version}-{ProfileName}";
 
         protected override void OnStartup(StartupEventArgs e)
         {
@@ -59,7 +62,7 @@ namespace mini2nbrowser
             {
                 LogCrash("OnStartup", ex);
                 MessageBox.Show(
-                    $"mini2n Browser 启动失败：\n{ex.Message}\n\n详情已写入：{CrashLogPath}",
+                    $"Polar Bear 启动失败：\n{ex.Message}\n\n详情已写入：{CrashLogPath}",
                     "启动错误", MessageBoxButton.OK, MessageBoxImage.Error);
                 Environment.Exit(-1);
             }

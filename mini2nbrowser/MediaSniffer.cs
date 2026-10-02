@@ -130,7 +130,24 @@ public class MediaItem : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
-    private void RaiseProp([CallerMemberName] string? p = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p));
+
+    /// <summary>属性变更通知（跨线程安全）：下载器在后台线程更新属性时，
+    /// 自动 marshaling 到 UI 线程再触发 PropertyChanged，保证进度条/速度/状态正确刷新。</summary>
+    private void RaiseProp([CallerMemberName] string? p = null)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher != null && !dispatcher.CheckAccess())
+        {
+            dispatcher.BeginInvoke(new Action(() =>
+            {
+                try { PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p)); } catch { }
+            }));
+        }
+        else
+        {
+            try { PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p)); } catch { }
+        }
+    }
 }
 
 // ===== 嗅探核心（逻辑同前，未改动）=====
@@ -141,11 +158,29 @@ public class MediaSniffer
     private readonly object _lock = new();
     private const int MaxItems = 500;
 
-    private static readonly string[] VideoExts = { ".mp4", ".flv", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".ts", ".wmv" };
-    private static readonly string[] AudioExts = { ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".flac", ".opus" };
-    private static readonly string[] StreamExts = { ".m3u8", ".mpd" };
+    // ===== 嗅探规则（参考猫抓，覆盖面更全）=====
+    private static readonly string[] VideoExts = {
+        ".mp4", ".flv", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".ts", ".wmv",
+        ".mpg", ".mpeg", ".3gp", ".3g2", ".f4v", ".mts", ".m2ts", ".ogv",
+        ".rm", ".rmvb", ".divx", ".vob", ".asf", ".tp", ".trp", ".m2v", ".mpv"
+    };
+    private static readonly string[] AudioExts = {
+        ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".flac", ".opus",
+        ".mid", ".midi", ".amr", ".wma", ".ape", ".aiff", ".alac", ".mka"
+    };
+    private static readonly string[] StreamExts = { ".m3u8", ".mpd", ".m3u" };
 
-    private static readonly string[] VideoCt = { "video/", "application/octet-stream" };
+    // ===== 自定义文件后缀嗅探（高级）=====
+    /// <summary>是否开启自定义文件后缀嗅探</summary>
+    public bool CustomEnabled { get; set; }
+    /// <summary>自定义后缀列表（小写，含点，如 .zip/.pdf）</summary>
+    public string[] CustomExts { get; set; } = Array.Empty<string>();
+
+    private static readonly string[] VideoCt = {
+        "video/", "application/octet-stream", "application/vnd.apple.mpegurl", "application/mp4",
+        "application/x-mpegURL", "application/x-mpegurl", "application/vnd.rn-realmedia",
+        "application/ogg"
+    };
     private static readonly string[] AudioCt = { "audio/", "application/ogg" };
     private static readonly string[] StreamCt = { "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/x-mpegURL", "application/dash+xml" };
 
@@ -210,7 +245,7 @@ public class MediaSniffer
         };
     }
 
-    private static bool MatchMedia(string url, string contentType, out string kind, out string ext)
+    private bool MatchMedia(string url, string contentType, out string kind, out string ext)
     {
         kind = ""; ext = "";
         var lower = url.Contains('?') ? url.Substring(0, url.IndexOf('?')) : url;
@@ -222,11 +257,29 @@ public class MediaSniffer
         if (AudioExts.Contains(rawExt)) { kind = "音频"; ext = rawExt.TrimStart('.'); return true; }
 
         var ct = (contentType ?? "").ToLowerInvariant();
-        if (string.IsNullOrEmpty(ct)) return false;
+        if (string.IsNullOrEmpty(ct)) return MatchCustom(rawExt, out kind, out ext);
         foreach (var p in StreamCt) if (ct.Contains(p)) { kind = "流媒体"; ext = "m3u8"; return true; }
         foreach (var p in VideoCt) if (ct.StartsWith(p)) { kind = "视频"; ext = GuessExtFromCt(ct); return true; }
         foreach (var p in AudioCt) if (ct.StartsWith(p)) { kind = "音频"; ext = GuessExtFromCt(ct); return true; }
 
+        return MatchCustom(rawExt, out kind, out ext);
+    }
+
+    /// <summary>自定义文件后缀嗅探：命中则归类为"文件"</summary>
+    private bool MatchCustom(string rawExt, out string kind, out string ext)
+    {
+        kind = ""; ext = "";
+        if (!CustomEnabled || CustomExts.Length == 0 || rawExt.Length == 0) return false;
+        foreach (var e in CustomExts)
+        {
+            if (string.IsNullOrEmpty(e)) continue;
+            var norm = e.Trim().TrimStart('.');
+            if (string.Equals(rawExt.TrimStart('.'), norm, StringComparison.OrdinalIgnoreCase))
+            {
+                kind = "文件"; ext = rawExt.TrimStart('.');
+                return true;
+            }
+        }
         return false;
     }
 
@@ -278,6 +331,62 @@ public class MediaSniffer
         }
         catch { }
     }
+
+    /// <summary>强力嗅探（DOM 扫描）注入入口：去重后插入列表，可在任意线程调用</summary>
+    public void AddFromDom(string url, string kind, string ext, string contentType, string title, string pageUrl)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        lock (_lock)
+        {
+            if (_seen.Contains(url)) return;
+            _seen.Add(url);
+        }
+
+        var item = new MediaItem
+        {
+            Url = url,
+            Kind = string.IsNullOrEmpty(kind) ? "视频" : kind,
+            Ext = string.IsNullOrEmpty(ext) ? GuessExtFromUrl(url) : ext,
+            ContentType = contentType ?? "",
+            PageTitle = title ?? "",
+            PageUrl = pageUrl ?? "",
+            Time = DateTime.Now,
+            Status = "已嗅探"
+        };
+
+        void Insert()
+        {
+            _items.Insert(0, item);
+            while (_items.Count > MaxItems) _items.RemoveAt(_items.Count - 1);
+        }
+
+        try
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher != null && !dispatcher.CheckAccess())
+                dispatcher.BeginInvoke(new Action(Insert));
+            else Insert();
+        }
+        catch { }
+    }
+
+    private static string GuessExtFromUrl(string url)
+    {
+        try
+        {
+            var lower = url.Contains('?') ? url[..url.IndexOf('?')] : url;
+            var ci = lower.LastIndexOf('.');
+            if (ci >= 0)
+            {
+                var ext = lower[(ci + 1)..].ToLowerInvariant();
+                if (ext.Length is >= 2 and <= 5 && ext.All(char.IsLetterOrDigit)) return ext;
+            }
+            if (lower.Contains(".m3u8", StringComparison.OrdinalIgnoreCase)) return "m3u8";
+            if (lower.Contains(".mpd", StringComparison.OrdinalIgnoreCase)) return "mpd";
+        }
+        catch { }
+        return "bin";
+    }
 }
 
 // ===== 块元数据 =====
@@ -297,17 +406,18 @@ internal sealed record SiteCacheEntry(string Host, int Threads, DateTime Ts);
 // ===== 增强型多线程下载器（移植自 ddm/main.cpp）=====
 public class MediaDownloader
 {
-    // ===== 配置常量（与 ddm 一致）=====
-    private const int MaxThreads = 32;
+    // ===== 配置常量（线程策略：普通文件单线程、大文件最多 8 线程）=====
+    private const int MaxThreads = 8;                 // 大文件并发上限
     private const int ProbeStep = 4;
-    private const int ProbeMax = 32;
+    private const int ProbeMax = 8;                   // 并发探测上限
     private const double ProbeMinSuccess = 0.70;
     private const int MaxRetry = 8;
     private const long MinBlockKB = 256;
+    private const long SingleThreadLimitBytes = 50L * 1024 * 1024; // ≤50MB 单线程直接下载
     private const int CacheValidDays = 7;
     private const int SpeedIntervalMs = 250;
     private const int SpeedWindow = 8;
-    private const int MergeBufferKB = 4096;
+    private const int MergeBufferKB = 16384;          // 16MB 合并缓冲，加快拼接
 
     private readonly HttpClient _http;
     private readonly string _cacheFile;
@@ -355,8 +465,8 @@ public class MediaDownloader
 
         var (total, rangeOk) = await GetFileSizeAsync(item.Url, item, ct);
 
-        // 不支持 Range 或拿不到大小 → 单线程降级
-        if (total <= 0 || !rangeOk)
+        // 普通文件（≤50MB）或不支持 Range → 单线程直接下载，省去并发探测开销
+        if (total <= 0 || !rangeOk || total <= SingleThreadLimitBytes)
         {
             await DownloadDirectAsync(item, savePath, progress, ct);
             return;
@@ -511,17 +621,17 @@ public class MediaDownloader
             return;
         }
 
-        // 合并
+        // 合并（大缓冲 + CopyToAsync 流式拷贝，速度更快）
         item.Status = "合并中";
         item.ActiveThreads = 0;
         progress?.Report(new MediaDownloadProgress(total, total, 100, "合并中..."));
-        await using var dst = new FileStream(savePath, FileMode.Create, FileAccess.Write, FileShare.Read, MergeBufferKB * 1024);
-        var buf = new byte[MergeBufferKB * 1024];
-        foreach (var b in blocks.OrderBy(x => x.Id))
+        await using (var dst = new FileStream(savePath, FileMode.Create, FileAccess.Write, FileShare.Read, MergeBufferKB * 1024))
         {
-            using var src = new FileStream(b.TempFile, FileMode.Open, FileAccess.Read, FileShare.Read, MergeBufferKB * 1024);
-            int rd;
-            while ((rd = await src.ReadAsync(buf, ct)) > 0) await dst.WriteAsync(buf.AsMemory(0, rd), ct);
+            foreach (var b in blocks.OrderBy(x => x.Id))
+            {
+                using var src = new FileStream(b.TempFile, FileMode.Open, FileAccess.Read, FileShare.Read, MergeBufferKB * 1024);
+                await src.CopyToAsync(dst, MergeBufferKB * 1024, ct);
+            }
         }
 
         try { if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true); } catch { }
@@ -654,7 +764,7 @@ public class MediaDownloader
         catch { return false; }
     }
 
-    // ===== 单线程降级下载 =====
+    // ===== 单线程直接下载（普通文件；带速度/ETA 反馈）=====
     private async Task DownloadDirectAsync(MediaItem item, string savePath, IProgress<MediaDownloadProgress>? progress, CancellationToken ct)
     {
         var req = new HttpRequestMessage(HttpMethod.Get, item.Url);
@@ -664,20 +774,57 @@ public class MediaDownloader
         var total = resp.Content.Headers.ContentLength ?? item.Size ?? 0;
         if (total > 0) item.Size = total;
         item.Status = "下载中";
-        await using var fs = new FileStream(savePath, FileMode.Create, FileAccess.Write, FileShare.Read, 81920);
+        item.ActiveThreads = 1;
+        item.TargetThreads = 1;
+
+        long recv = 0, speedBytes = 0;
+        var startTime = DateTime.Now;
+        var lastTick = DateTime.Now;
+        var speedWindow = new long[SpeedWindow];
+        int wi = 0;
+        using var speedTimer = new Timer(_ =>
+        {
+            var wb = Interlocked.Exchange(ref speedBytes, 0);
+            var now = DateTime.Now;
+            var ms = (now - lastTick).TotalMilliseconds;
+            lastTick = now;
+            var inst = ms > 0 ? wb * 1000.0 / ms : 0;
+            speedWindow[wi % SpeedWindow] = (long)inst;
+            wi++;
+            long sum = 0;
+            for (int i = 0; i < SpeedWindow; i++) sum += speedWindow[i];
+            var sp = sum / Math.Min(wi, SpeedWindow);
+            item.Speed = sp;
+            var totalMs = (now - startTime).TotalMilliseconds;
+            if (totalMs > 0) item.AvgSpeed = (long)(Interlocked.Read(ref recv) * 1000.0 / totalMs);
+            if (sp > 0 && total > 0) item.EtaSeconds = (total - Interlocked.Read(ref recv)) / sp;
+            else item.EtaSeconds = -1;
+        }, null, SpeedIntervalMs, SpeedIntervalMs);
+
+        await using var fs = new FileStream(savePath, FileMode.Create, FileAccess.Write, FileShare.Read, 256 * 1024);
         using var stream = await resp.Content.ReadAsStreamAsync(ct);
-        var buf = new byte[81920];
-        long recv = 0;
+        var buf = new byte[256 * 1024];
         int n;
         while ((n = await stream.ReadAsync(buf, ct)) > 0)
         {
             await fs.WriteAsync(buf.AsMemory(0, n), ct);
             recv += n;
+            Interlocked.Add(ref speedBytes, n);
             item.Downloaded = recv;
-            if (total > 0) { item.Progress = recv * 100d / total; progress?.Report(new MediaDownloadProgress(recv, total, recv * 100d / total)); }
+            if (total > 0)
+            {
+                item.Progress = recv * 100d / total;
+                progress?.Report(new MediaDownloadProgress(recv, total, recv * 100d / total));
+            }
         }
+        await speedTimer.DisposeAsync();
         item.Status = "已完成";
         item.Progress = 100;
+        item.ActiveThreads = 0;
+        item.TargetThreads = 0;
+        item.Speed = 0;
+        item.AvgSpeed = 0;
+        item.EtaSeconds = 0;
     }
 
     // ===== m3u8 下载：纯 C# 实现，分片下载 + TS 拼接 =====
@@ -768,14 +915,13 @@ public class MediaDownloader
             item.Status = "合并中";
 
             // 纯 C# TS 拼接：按分片顺序二进制追加（MPEG-TS 流可直接拼接播放）
-            var mergeBuf = new byte[MergeBufferKB * 1024];
-            await using var outFs = new FileStream(savePath, FileMode.Create, FileAccess.Write, FileShare.Read, MergeBufferKB * 1024);
-            foreach (var f in files.Where(x => !string.IsNullOrEmpty(x) && File.Exists(x)).OrderBy(x => x))
+            await using (var outFs = new FileStream(savePath, FileMode.Create, FileAccess.Write, FileShare.Read, MergeBufferKB * 1024))
             {
-                using var segFs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.Read, MergeBufferKB * 1024);
-                int rd;
-                while ((rd = await segFs.ReadAsync(mergeBuf, ct)) > 0)
-                    await outFs.WriteAsync(mergeBuf.AsMemory(0, rd), ct);
+                foreach (var f in files.Where(x => !string.IsNullOrEmpty(x) && File.Exists(x)).OrderBy(x => x))
+                {
+                    using var segFs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.Read, MergeBufferKB * 1024);
+                    await segFs.CopyToAsync(outFs, MergeBufferKB * 1024, ct);
+                }
             }
         }
         finally

@@ -1,11 +1,16 @@
-﻿bin/
+# Build outputs
+bin/
 obj/
 publish/
-.vs/
 *.user
 *.suo
-*.pdb
+*.pubxml.user
+
+# VS
+.vs/
+
+# Logs
 *.log
-*.zip
-Thumbs.db
-.DS_Store
+
+# Temp
+*.tmp

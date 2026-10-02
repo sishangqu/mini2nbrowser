@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>2ⁿ</title>
+    <title>Polar Bear</title>
     <style>
         * {
             margin: 0;
@@ -30,19 +30,32 @@
         }
 
         .logo {
-            font-size: 72px;
-            font-weight: 700;
-            background: linear-gradient(135deg, #2488C8, #28A870);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 26px;
             animation: floatBreath 3.5s ease-in-out infinite;
-            margin-bottom: 32px;
         }
 
-            .logo sup {
-                font-size: 0.45em;
-                vertical-align: 0.9em;
+        .logo img {
+            width: 180px;
+            height: 180px;
+            object-fit: cover;
+            border-radius: 20px;
+            filter: drop-shadow(0 6px 14px rgba(30,60,110,0.25));
+            transition: opacity 0.4s ease-in-out;
+        }
+
+        .logo .brand-name {
+            margin-top: 10px;
+            font-size: 17px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: #1c6ea8;
+        }
+
+            body.dark .logo .brand-name {
+                color: #c4b5fd;
             }
 
         .search-box {
@@ -114,13 +127,6 @@
             background: rgba(0,0,0,0.45);
         }
 
-            body.dark .logo {
-                background: linear-gradient(135deg, #a78bfa, #ffffff);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-            }
-
             body.dark .search-box {
                 border-color: #a78bfa;
             }
@@ -156,7 +162,10 @@
     </style>
 </head>
 <body>
-    <div class="logo">2<sup>n</sup></div>
+    <div class="logo">
+        <img id="bearLogo" src="bear_01.png" alt="Polar Bear">
+        <div class="brand-name">Polar Bear</div>
+    </div>
     <form class="search-box" onsubmit="doSearch(event)">
         <input type="text" id="searchInput" placeholder="搜索" autofocus>
         <button type="submit">搜索</button>
@@ -192,6 +201,30 @@
         window.location.href = base + encodeURIComponent(q);
         }
         }
+
+        // ===== 北极熊图片轮播（14 张真实图片，类似 GIF 动画）=====
+        (function(){
+        var img = document.getElementById('bearLogo');
+        if (!img) return;
+        var frames = [];
+        for (var i = 1; i <= 14; i++) {
+            frames.push('bear_' + (i < 10 ? '0' + i : i) + '.png');
+        }
+        // 预加载所有图片
+        frames.forEach(function(src){
+            var p = new Image();
+            p.src = src;
+        });
+        var idx = 0;
+        setInterval(function(){
+            idx = (idx + 1) % frames.length;
+            img.style.opacity = '0';
+            setTimeout(function(){
+                img.src = frames[idx];
+                img.style.opacity = '1';
+            }, 400);
+        }, 3500);
+        })();
     </script>
 </body>
 </html>

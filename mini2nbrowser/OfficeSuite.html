@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>极简办公</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#f6f8fb; --panel:#ffffff; --panel2:#eef2f7; --border:#e1e7ef;
+  --text:#1c2430; --muted:#6b7686; --accent:#2f6fed; --accent2:#28a870;
+  --toolbar-h:44px; --radius:8px; --shadow:0 2px 10px rgba(20,40,80,.06);
+}
+body.dark{
+  --bg:#151a24; --panel:#1d2431; --panel2:#262f40; --border:#333d50;
+  --text:#e6ecf4; --muted:#93a1b5; --accent:#5b8def; --accent2:#34c789;
+}
+body{background:var(--bg);color:var(--text);font-family:"Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;
+     height:100vh;display:flex;flex-direction:column;overflow:hidden;transition:background .25s,color .25s}
+button{font-family:inherit;border:1px solid var(--border);background:var(--panel2);color:var(--text);
+       padding:5px 11px;border-radius:6px;cursor:pointer;font-size:13px;line-height:1.4;transition:all .15s;white-space:nowrap}
+button:hover{background:var(--accent);border-color:var(--accent);color:#fff}
+button:active{transform:scale(.96)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover{filter:brightness(1.1)}
+select,input[type=text]{font-family:inherit;font-size:13px;border:1px solid var(--border);background:var(--panel);
+      color:var(--text);border-radius:6px;padding:5px 8px;outline:none}
+select:focus,input[type=text]:focus{border-color:var(--accent)}
+input[type=color]{width:26px;height:26px;border:1px solid var(--border);border-radius:6px;padding:1px;background:var(--panel);cursor:pointer}
+
+header{height:var(--toolbar-h);display:flex;align-items:center;gap:14px;padding:0 14px;
+       background:var(--panel);border-bottom:1px solid var(--border);flex-shrink:0}
+.brand{font-weight:700;font-size:15px;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.brand b{background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+nav{display:flex;gap:4px;flex:1;justify-content:center}
+nav button{padding:6px 18px;font-size:13.5px;border-radius:20px}
+nav button.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.actions{display:flex;gap:6px;align-items:center}
+
+main{flex:1;overflow:hidden;display:flex;flex-direction:column}
+.tabpane{flex:1;display:flex;flex-direction:column;min-height:0}
+.tabbar{display:flex;gap:6px;align-items:center;padding:8px 12px;background:var(--panel);
+        border-bottom:1px solid var(--border);flex-wrap:wrap;flex-shrink:0}
+.sep{width:1px;height:20px;background:var(--border);margin:0 4px}
+
+/* ===== 文档 ===== */
+.doctoolbar{display:flex;gap:5px;align-items:center;padding:8px 12px;background:var(--panel);
+            border-bottom:1px solid var(--border);flex-wrap:wrap;flex-shrink:0}
+.doctoolbar button{min-width:30px;font-size:13px;padding:5px 8px}
+#docEditor{flex:1;overflow:auto;margin:14px;padding:34px 44px;background:var(--panel);
+           border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);
+           outline:none;font-size:16px;line-height:1.75;min-height:120px}
+#docEditor:empty::before{content:attr(data-ph);color:var(--muted);pointer-events:none}
+#docEditor b{font-weight:700}#docEditor i{font-style:italic}#docEditor u{text-decoration:underline}
+#docEditor s{text-decoration:line-through}
+#docEditor ul{padding-left:26px;list-style:disc}#docEditor ol{padding-left:26px;list-style:decimal}
+#docEditor h1{font-size:1.8em;font-weight:700;margin:.4em 0}#docEditor h2{font-size:1.45em;font-weight:700;margin:.4em 0}
+#docEditor h3{font-size:1.2em;font-weight:600;margin:.4em 0}
+.docStatus{color:var(--muted);font-size:12px;margin-left:auto;white-space:nowrap}
+
+/* ===== 表格 ===== */
+.sheetwrap{flex:1;overflow:auto;margin:10px 12px;background:var(--panel);border:1px solid var(--border);
+           border-radius:var(--radius);box-shadow:var(--shadow)}
+#sheetGrid{display:grid;grid-template-columns:44px repeat(var(--cols,10),110px);min-width:100%;user-select:none}
+.cell-c,#cell-r0{position:sticky;z-index:2}
+.cell{min-height:30px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);
+      display:flex;align-items:center;padding:0 7px;font-size:13px;overflow:hidden;cursor:cell}
+.cell-input{width:100%;border:none;outline:none;background:transparent;font:inherit;color:inherit}
+.cell.num{justify-content:flex-end}
+.row-head{position:sticky;left:0;z-index:1;background:var(--panel2);color:var(--muted);font-size:12px;
+      border-right:1px solid var(--border);border-bottom:1px solid var(--border);
+      display:flex;align-items:center;justify-content:center;cursor:pointer;font-weight:600}
+.col-head{position:sticky;top:0;z-index:1;background:var(--panel2);color:var(--muted);font-size:12px;
+      border-right:1px solid var(--border);border-bottom:1px solid var(--border);
+      display:flex;align-items:center;justify-content:center;font-weight:600}
+.corner{position:sticky;left:0;top:0;z-index:3;background:var(--panel2);border-right:1px solid var(--border);border-bottom:1px solid var(--border)}
+.cell.focus{outline:2px solid var(--accent);outline-offset:-1px;background:rgba(47,111,237,.06)}
+.row-head:hover,.col-head:hover{background:var(--accent);color:#fff}
+.sheetStat{color:var(--muted);font-size:12px;padding:0 12px 8px;display:flex;gap:14px}
+
+/* ===== 演示 ===== */
+.slidebody{flex:1;display:flex;min-height:0}
+.slide-thumbs{width:170px;background:var(--panel);border-right:1px solid var(--border);overflow:auto;padding:8px;flex-shrink:0}
+.thumb{position:relative;background:var(--panel2);border:1px solid var(--border);border-radius:6px;height:96px;
+       margin-bottom:8px;cursor:pointer;overflow:hidden;padding:8px;transition:border-color .15s}
+.thumb.on{border-color:var(--accent);box-shadow:0 0 0 2px rgba(47,111,237,.25)}
+.thumb .t-title{font-weight:700;font-size:10px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thumb .t-body{font-size:8.5px;color:var(--muted);margin-top:3px;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.thumb .t-no{position:absolute;right:4px;bottom:2px;font-size:9px;color:var(--muted)}
+.thumb:hover .t-del{opacity:1}
+.slide-edit{flex:1;display:flex;align-items:center;justify-content:center;overflow:auto;padding:16px;background:var(--bg)}
+#slideCanvas{width:min(90%,780px);aspect-ratio:16/9;background:var(--panel);border:1px solid var(--border);
+             border-radius:6px;box-shadow:var(--shadow);padding:4.5% 6%;display:flex;flex-direction:column;gap:14px}
+#slideTitle{font-size:clamp(18px,3.2vw,38px);font-weight:800;outline:none;line-height:1.3;color:var(--text)}
+#slideBody{font-size:clamp(13px,1.7vw,20px);flex:1;outline:none;line-height:1.7;color:var(--text);overflow:auto}
+#slideTitle:empty::before,#slideBody:empty::before{content:"点击输入";color:var(--muted);opacity:.5}
+
+/* 放映 */
+#player{position:fixed;inset:0;background:#0e1116;z-index:999;display:none;align-items:center;justify-content:center;flex-direction:column}
+#player.on{display:flex}
+#player .p-canvas{width:min(92vw,calc(92vh*1.777));aspect-ratio:16/9;background:#fff;color:#1c2430;
+       border-radius:8px;padding:5% 6%;display:flex;flex-direction:column;gap:16px;box-shadow:0 10px 40px rgba(0,0,0,.5)}
+#player .p-title{font-size:clamp(24px,4vw,54px);font-weight:800;line-height:1.3}
+#player .p-body{font-size:clamp(16px,2.2vw,28px);flex:1;line-height:1.7;white-space:pre-wrap;overflow:auto}
+#player .p-nav{position:fixed;bottom:24px;left:0;right:0;display:flex;justify-content:center;gap:12px;z-index:1000}
+#player .p-nav button{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.2);color:#fff;padding:8px 22px;font-size:14px}
+#player .p-counter{position:fixed;top:14px;right:20px;color:rgba(255,255,255,.65);font-size:13px;z-index:1000}
+#player .p-hint{position:fixed;bottom:14px;right:20px;color:rgba(255,255,255,.35);font-size:12px;z-index:1000}
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#1d2431;color:#fff;
+       padding:8px 18px;border-radius:20px;font-size:13px;z-index:2000;opacity:0;pointer-events:none;transition:opacity .25s}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><b>⌬</b> 极简办公 <span style="color:var(--muted);font-weight:400;font-size:12px">Polar Bear Suite</span></div>
+  <nav>
+    <button data-tab="docs" class="on">📄 文档</button>
+    <button data-tab="sheets">📊 表格</button>
+    <button data-tab="slides">📽 演示</button>
+  </nav>
+  <div class="actions">
+    <button id="btnSave" class="primary">💾 保存</button>
+    <button id="btnTheme" title="切换深浅主题">🌙</button>
+  </div>
+</header>
+
+<main>
+  <!-- ========== 文档 ========== -->
+  <section id="tab-docs" class="tabpane">
+    <div class="doctoolbar">
+      <select id="docFontSize" title="字号"><option value="3">小</option><option value="4" selected>中</option><option value="5">大</option><option value="6">特大</option></select>
+      <input type="color" id="docColor" value="#1c2430" title="文字颜色">
+      <input type="color" id="docBg" value="#ffff00" title="高亮颜色">
+      <span class="sep"></span>
+      <button cmd="bold" title="加粗"><b>B</b></button>
+      <button cmd="italic" title="斜体"><i>I</i></button>
+      <button cmd="underline" title="下划线"><u>U</u></button>
+      <button cmd="strikeThrough" title="删除线"><s>S</s></button>
+      <span class="sep"></span>
+      <button cmd="insertUnorderedList" title="无序列表">•≡</button>
+      <button cmd="insertOrderedList" title="有序列表">1≡</button>
+      <span class="sep"></span>
+      <button cmd="justifyLeft" title="左对齐">⇤</button>
+      <button cmd="justifyCenter" title="居中">⇹</button>
+      <button cmd="justifyRight" title="右对齐">⇥</button>
+      <span class="sep"></span>
+      <button id="btnUndo" title="撤销">↶</button>
+      <button id="btnRedo" title="重做">↷</button>
+      <button cmd="removeFormat" title="清除格式">⌫</button>
+    </div>
+    <div class="tabbar">
+      <select id="docList" style="min-width:140px"></select>
+      <input type="text" id="docName" placeholder="文档名" style="width:130px">
+      <button id="btnNewDoc">新建</button>
+      <button id="btnDelDoc">删除</button>
+      <button id="btnRenameDoc">重命名</button>
+      <span class="sep"></span>
+      <button id="btnExportDoc">导出 .html</button>
+      <button id="btnExportTxt">导出 .txt</button>
+      <span class="docStatus" id="docStatus"></span>
+    </div>
+    <div id="docEditor" contenteditable="true" spellcheck="false" data-ph="开始输入文字…（支持加粗/斜体/列表/颜色等基础格式，自动保存）"></div>
+  </section>
+
+  <!-- ========== 表格 ========== -->
+  <section id="tab-sheets" class="tabpane" style="display:none">
+    <div class="tabbar">
+      <button id="btnAddRow">＋ 行</button><button id="btnDelRow">－ 行</button>
+      <button id="btnAddCol">＋ 列</button><button id="btnDelCol">－ 列</button>
+      <span class="sep"></span>
+      <button id="btnClearSheet">清空</button>
+      <button id="btnExportCsv" class="primary">导出 CSV</button>
+      <input type="text" id="sheetName" placeholder="表格名" style="width:120px">
+      <button id="btnRenameSheet">重命名</button>
+    </div>
+    <div class="sheetwrap"><div id="sheetGrid"></div></div>
+    <div class="sheetStat"><span>输入公式以 = 开头，如 <b>=SUM(A1:A5)</b>、<b>=AVG(B2:D2)</b>、<b>=A1*2+B2</b>，回车计算</span><span id="sheetPos"></span></div>
+  </section>
+
+  <!-- ========== 演示 ========== -->
+  <section id="tab-slides" class="tabpane" style="display:none">
+    <div class="tabbar">
+      <button id="btnAddSlide">＋ 页</button><button id="btnDelSlide">－ 页</button>
+      <button id="btnCopySlide">复制页</button>
+      <button id="btnClearSlide">清空全部</button>
+      <span class="sep"></span>
+      <button id="btnPlay" class="primary">▶ 放映</button>
+    </div>
+    <div class="slidebody">
+      <div class="slide-thumbs" id="slideThumbs"></div>
+      <div class="slide-edit">
+        <div id="slideCanvas">
+          <div id="slideTitle" contenteditable="true" spellcheck="false"></div>
+          <div id="slideBody" contenteditable="true" spellcheck="false"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="player">
+  <div class="p-counter" id="pCounter"></div>
+  <div class="p-canvas"><div class="p-title" id="pTitle"></div><div class="p-body" id="pBody"></div></div>
+  <div class="p-nav">
+    <button id="pPrev">‹ 上一页</button>
+    <button id="pNext">下一页 ›</button>
+    <button id="pExit">退出 (Esc)</button>
+  </div>
+  <div class="p-hint">← → 翻页 · Esc 退出</div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+var D=document, $=function(s){return D.querySelector(s)}, $$=function(s){return Array.prototype.slice.call(D.querySelectorAll(s))};
+
+/* ========== 主题（内存友好：仅一个状态位）========== */
+var themePref=localStorage.getItem('m2n_office_theme')||'';
+function applyTheme(){
+  var dark = themePref==='dark' || (themePref!=='light' && window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);
+  D.body.classList.toggle('dark',dark);
+  $('#btnTheme').textContent = dark?'☀':'🌙';
+}
+applyTheme();
+$('#btnTheme').onclick=function(){ themePref = D.body.classList.contains('dark')?'light':'dark'; localStorage.setItem('m2n_office_theme',themePref); applyTheme(); };
+
+/* ========== Tab 切换 ========== */
+var tabs=['docs','sheets','slides'];
+function switchTab(t){
+  tabs.forEach(function(x){ $('#tab-'+x).style.display = x===t?'flex':'none'; });
+  $$('nav button').forEach(function(b){ b.classList.toggle('on', b.dataset.tab===t); });
+  if(t==='sheets') renderSheet();
+  if(t==='slides') renderThumbs();
+}
+$$('nav button').forEach(function(b){ b.onclick=function(){ switchTab(b.dataset.tab); }; });
+
+/* ========== Toast ========== */
+var toastTimer=null;
+function toast(msg){ var t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(function(){t.classList.remove('show')},1600); }
+
+/* ========== 保存状态 ========== */
+function setStatus(t){ var el=$('#docStatus'); if(el) el.textContent=t||''; }
+
+/* ========== 文档 ========== */
+var docKey='m2n_office_docs';
+var docs = (function(){ try{ var v=JSON.parse(localStorage.getItem(docKey)||'null'); return v&&v.length? v:[{name:'未命名文档',html:''}]; }catch(e){ return [{name:'未命名文档',html:''}]; } })();
+var curDoc=0;
+function saveDocs(){ try{ localStorage.setItem(docKey, JSON.stringify(docs)); }catch(e){} }
+function renderDocList(){
+  var sel=$('#docList'); sel.innerHTML='';
+  docs.forEach(function(d,i){ var o=D.createElement('option'); o.value=i; o.textContent=(i+1)+'. '+(d.name||'未命名'); sel.appendChild(o); });
+  sel.value=curDoc;
+  $('#docName').value=docs[curDoc].name||'';
+  setStatus('已保存');
+}
+function loadDoc(i){
+  curDoc=i; if(!docs[i]) return;
+  var ed=$('#docEditor'); ed.innerHTML=docs[i].html||'';
+  renderDocList();
+}
+var docTimer=null;
+function autosaveDoc(){ clearTimeout(docTimer); docTimer=setTimeout(function(){ docs[curDoc].html=$('#docEditor').innerHTML; saveDocs(); setStatus('已保存 '+new Date().toLocaleTimeString()); },900); }
+$('#docEditor').addEventListener('input', autosaveDoc);
+$('#docList').onchange=function(){ loadDoc(+this.value); };
+$('#btnNewDoc').onclick=function(){ docs.push({name:'未命名文档',html:''}); curDoc=docs.length-1; loadDoc(curDoc); saveDocs(); toast('已新建文档'); };
+$('#btnDelDoc').onclick=function(){ if(docs.length<=1){toast('至少保留一个文档');return;} docs.splice(curDoc,1); if(curDoc>=docs.length)curDoc=docs.length-1; loadDoc(curDoc); saveDocs(); toast('已删除'); };
+$('#btnRenameDoc').onclick=function(){ var n=$('#docName').value.trim()||'未命名文档'; docs[curDoc].name=n; renderDocList(); saveDocs(); toast('已重命名'); };
+$('#docName').addEventListener('keydown',function(e){ if(e.key==='Enter'){ $('#btnRenameDoc').click(); } });
+$('#btnExportDoc').onclick=function(){
+  var tpl='<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+esc(docs[curDoc].name)+'</title><style>body{font-family:"Microsoft YaHei",sans-serif;line-height:1.8;max-width:820px;margin:40px auto;padding:0 24px}</style></head><body>'+$('#docEditor').innerHTML+'</body></html>';
+  download(docs[curDoc].name+'.html', tpl, 'text/html;charset=utf-8'); toast('已导出 .html');
+};
+$('#btnExportTxt').onclick=function(){
+  var ed=$('#docEditor').cloneNode(true);
+  ed.querySelectorAll('br').forEach(function(b){b.replaceWith('\n')});
+  ed.querySelectorAll('div,p,li,h1,h2,h3').forEach(function(n){ n.appendChild(D.createTextNode('\n')); });
+  var txt=ed.textContent.replace(/\n{3,}/g,'\n\n').trim();
+  download(docs[curDoc].name+'.txt', txt, 'text/plain;charset=utf-8'); toast('已导出 .txt');
+};
+/* 工具栏 */
+$$('.doctoolbar button[cmd]').forEach(function(b){ b.onclick=function(){ D.execCommand(b.getAttribute('cmd')); autosaveDoc(); }; });
+$('#docFontSize').onchange=function(){ D.execCommand('fontSize',false,this.value); autosaveDoc(); };
+$('#docColor').oninput=function(){ D.execCommand('foreColor',false,this.value); };
+$('#docBg').oninput=function(){ D.execCommand('hiliteColor',false,this.value); };
+$('#btnUndo').onclick=function(){ D.execCommand('undo'); };
+$('#btnRedo').onclick=function(){ D.execCommand('redo'); };
+$('#docEditor').addEventListener('keydown',function(e){
+  if((e.ctrlKey||e.metaKey)&&e.key==='s'){ e.preventDefault(); docs[curDoc].html=$('#docEditor').innerHTML; saveDocs(); setStatus('已保存'); toast('文档已保存'); }
+});
+loadDoc(0);
+
+/* ========== 表格 ========== */
+var sheetKey='m2n_office_sheets';
+var sheet = (function(){ try{ var v=JSON.parse(localStorage.getItem(sheetKey)||'null'); if(v&&v.data&&v.rows&&v.cols) return v; }catch(e){} return {name:'未命名表格',rows:16,cols:10,data:{}}; })();
+function sheetCell(r,c){ return sheet.data[r+','+c]||''; }
+function sheetSet(r,c,v){ sheet.data[r+','+c]=v; }
+function saveSheet(){ try{ localStorage.setItem(sheetKey, JSON.stringify(sheet)); }catch(e){} }
+/* 公式求值（极简：SUM/AVG/MAX/MIN/COUNT + 四则运算） */
+function evalFormula(f){
+  var m;
+  m=/^=(SUM|AVG|MAX|MIN|COUNT)\s*\(([A-Z]+)(\d+)\s*:\s*([A-Z]+)(\d+)\)$/i.exec(f);
+  if(m){
+    var fn=m[1].toUpperCase(), c1=colNum(m[2]), r1=+m[3], c2=colNum(m[4]), r2=+m[5], vals=[];
+    for(var r=Math.min(r1,r2);r<=Math.max(r1,r2);r++)
+      for(var c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){ var v=num(sheetCell(r,c)); if(!isNaN(v)) vals.push(v); }
+    if(fn==='SUM') return vals.reduce(function(a,b){return a+b},0);
+    if(fn==='AVG') return vals.length? vals.reduce(function(a,b){return a+b},0)/vals.length : 0;
+    if(fn==='MAX') return vals.length? Math.max.apply(null,vals) : 0;
+    if(fn==='MIN') return vals.length? Math.min.apply(null,vals) : 0;
+    return vals.length;
+  }
+  /* 单元格引用 + 四则运算，如 =A1*2+B2 */
+  var expr=f.slice(1).replace(/([A-Z]+)(\d+)/g,function(_,cc,rr){ var v=num(sheetCell(+rr,colNum(cc))); return isNaN(v)?'0':v; });
+  try{ var r=Function('"use strict";return ('+expr+')')(); return typeof r==='number'&&isFinite(r)? r : String(r); }catch(e){ return '#ERR'; }
+}
+function colNum(c){ var n=0; for(var i=0;i<c.length;i++) n=n*26+(c.charCodeAt(i)-64); return n; }
+function colName(n){ var s=''; while(n>0){ var m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=Math.floor((n-1)/26);} return s; }
+function num(v){ if(typeof v==='number') return v; if(typeof v==='string'){ var t=parseFloat(v.replace(/,/g,'')); return isNaN(t)?NaN:t; } return NaN; }
+var editingCell=null, editBox=null;
+function renderSheet(){
+  var g=$('#sheetGrid'); g.style.setProperty('--cols',sheet.cols);
+  var h='<div class="corner"></div>';
+  for(var c=1;c<=sheet.cols;c++) h+='<div class="col-head">'+colName(c)+'</div>';
+  for(var r=1;r<=sheet.rows;r++){
+    h+='<div class="row-head" data-r="'+r+'">'+r+'</div>';
+    for(c=1;c<=sheet.cols;c++){
+      var v=sheetCell(r,c), disp=v;
+      if(typeof v==='string'&&v[0]==='='){ disp=String(evalFormula(v)); }
+      var numv=typeof v==='number'||(!isNaN(num(v))&&v!==''&&v[0]!=='=');
+      h+='<div class="cell'+(numv?' num':'')+'" data-r="'+r+'" data-c="'+c+'">'+esc(disp)+'</div>';
+    }
+  }
+  g.innerHTML=h;
+}
+$('#sheetGrid').addEventListener('mousedown',function(e){
+  var t=e.target;
+  if(t.classList.contains('row-head')){
+    if(confirm('删除第 '+t.dataset.r+' 行？')){ var r=+t.dataset.r; for(var c=1;c<=sheet.cols;c++) delete sheet.data[r+','+c]; for(var rr=r;rr<sheet.rows;rr++) for(c=1;c<=sheet.cols;c++){ if(sheet.data[(rr+1)+','+c]!==undefined){ sheet.data[rr+','+c]=sheet.data[(rr+1)+','+c]; } delete sheet.data[(rr+1)+','+c]; } sheet.rows--; renderSheet(); saveSheet(); }
+    return;
+  }
+  if(!t.classList.contains('cell')) return;
+  var r=+t.dataset.r, c=+t.dataset.c, g=$('#sheetGrid');
+  $$('.cell.focus').forEach(function(x){x.classList.remove('focus')});
+  t.classList.add('focus');
+  $('#sheetPos').textContent='选中 '+colName(c)+r;
+  var inp=D.createElement('input'); inp.className='cell-input'; inp.value=sheetCell(r,c);
+  inp.style.width=t.clientWidth+'px';
+  t.textContent=''; t.appendChild(inp); inp.focus(); inp.select();
+  editingCell={r:r,c:c};
+  inp.addEventListener('blur',function(){ commitCell(); });
+  inp.addEventListener('keydown',function(ev){
+    if(ev.key==='Enter'){ commitCell(); ev.preventDefault(); }
+    if(ev.key==='Escape'){ t.textContent=esc(sheetCell(r,c)); t.innerHTML=t.textContent; editingCell=null; }
+  });
+});
+function commitCell(){
+  if(!editingCell) return;
+  var r=editingCell.r,c=editingCell.c, inp=$('#sheetGrid .cell-input');
+  var v=inp? inp.value.trim() : '';
+  if(v==='') delete sheet.data[r+','+c]; else sheetSet(r,c,v);
+  editingCell=null; renderSheet(); saveSheet();
+}
+$('#btnAddRow').onclick=function(){ if(sheet.rows<200) sheet.rows++; renderSheet(); saveSheet(); };
+$('#btnDelRow').onclick=function(){ if(sheet.rows>1) sheet.rows--; renderSheet(); saveSheet(); };
+$('#btnAddCol').onclick=function(){ if(sheet.cols<26) sheet.cols++; renderSheet(); saveSheet(); };
+$('#btnDelCol').onclick=function(){ if(sheet.cols>1){ sheet.cols--; for(var r=1;r<=sheet.rows;r++) delete sheet.data[r+','+(sheet.cols+1)]; } renderSheet(); saveSheet(); };
+$('#btnClearSheet').onclick=function(){ if(confirm('清空所有数据？')){ sheet.data={}; renderSheet(); saveSheet(); } };
+$('#sheetName').value=sheet.name||'';
+$('#btnRenameSheet').onclick=function(){ sheet.name=$('#sheetName').value.trim()||'未命名表格'; saveSheet(); toast('表格已重命名'); };
+$('#sheetName').addEventListener('keydown',function(e){ if(e.key==='Enter'){ $('#btnRenameSheet').click(); } });
+$('#btnExportCsv').onclick=function(){
+  var lines=[];
+  for(var r=1;r<=sheet.rows;r++){
+    var row=[];
+    for(var c=1;c<=sheet.cols;c++){ var v=sheetCell(r,c); if(typeof v==='string'&&v[0]==='=')v=evalFormula(v); row.push(csvEsc(v)); }
+    lines.push(row.join(','));
+  }
+  download(sheet.name+'.csv', '\ufeff'+lines.join('\r\n'), 'text/csv;charset=utf-8'); toast('已导出 CSV');
+};
+function csvEsc(v){ v=String(v===''?'':v); return /[",\n\r]/.test(v)? '"'+v.replace(/"/g,'""')+'"' : v; }
+
+/* ========== 演示 ========== */
+var slideKey='m2n_office_slides';
+var slides = (function(){ try{ var v=JSON.parse(localStorage.getItem(slideKey)||'null'); if(v&&v.length) return v; }catch(e){} return [{title:'极简办公套件',body:'文档 · 表格 · 演示\n—— 极简版本，支持基础编辑'}]; })();
+var curSlide=0;
+function saveSlides(){ try{ localStorage.setItem(slideKey, JSON.stringify(slides)); }catch(e){} }
+function renderThumbs(){
+  var box=$('#slideThumbs'); box.innerHTML='';
+  slides.forEach(function(s,i){
+    var d=D.createElement('div'); d.className='thumb'+(i===curSlide?' on':'');
+    d.innerHTML='<div class="t-title">'+esc(s.title||'无标题')+'</div><div class="t-body">'+esc((s.body||'').slice(0,80))+'</div><div class="t-no">'+(i+1)+'</div>';
+    d.onclick=function(){ curSlide=i; loadSlide(i); };
+    box.appendChild(d);
+  });
+}
+function loadSlide(i){
+  curSlide=i; var s=slides[i]; if(!s) return;
+  $('#slideTitle').innerHTML=s.title||''; $('#slideBody').innerHTML=s.body||'';
+  renderThumbs();
+}
+var slideTimer=null;
+function autosaveSlide(){ clearTimeout(slideTimer); slideTimer=setTimeout(function(){ slides[curSlide].title=$('#slideTitle').innerHTML; slides[curSlide].body=$('#slideBody').innerHTML; saveSlides(); },800); }
+$('#slideTitle').addEventListener('input',autosaveSlide);
+$('#slideBody').addEventListener('input',autosaveSlide);
+$('#btnAddSlide').onclick=function(){ slides.splice(curSlide+1,0,{title:'新页面',body:'双击此处输入内容'}); curSlide++; loadSlide(curSlide); saveSlides(); };
+$('#btnDelSlide').onclick=function(){ if(slides.length<=1){toast('至少保留一页');return;} slides.splice(curSlide,1); if(curSlide>=slides.length)curSlide=slides.length-1; loadSlide(curSlide); saveSlides(); };
+$('#btnCopySlide').onclick=function(){ var s=slides[curSlide]; slides.splice(curSlide+1,0,{title:s.title,body:s.body}); curSlide++; loadSlide(curSlide); saveSlides(); };
+$('#btnClearSlide').onclick=function(){ if(confirm('清空全部幻灯片？')){ slides=[{title:'新演示',body:'双击此处输入内容'}]; curSlide=0; loadSlide(0); saveSlides(); } };
+loadSlide(0);
+
+/* 放映（全屏，←→翻页，Esc退出；退出时释放 DOM） */
+var player=null;
+$('#btnPlay').onclick=function(){ playSlide(curSlide); };
+function playSlide(i){
+  player=D.getElementById('player'); player.classList.add('on');
+  var idx=i;
+  function show(){
+    var s=slides[idx]; if(!s) return;
+    D.getElementById('pTitle').textContent=s.title||''; D.getElementById('pBody').textContent=s.body||'';
+    D.getElementById('pCounter').textContent=(idx+1)+' / '+slides.length;
+  }
+  function prev(){ if(idx>0){idx--;show();} }
+  function next(){ if(idx<slides.length-1){idx++;show();} }
+  function exit(){ D.removeEventListener('keydown',onKey); D.getElementById('pPrev').onclick=null; D.getElementById('pNext').onclick=null; D.getElementById('pExit').onclick=null; player.classList.remove('on'); player.innerHTML='<div class="p-counter" id="pCounter"></div><div class="p-canvas"><div class="p-title" id="pTitle"></div><div class="p-body" id="pBody"></div></div><div class="p-nav"><button id="pPrev">‹ 上一页</button><button id="pNext">下一页 ›</button><button id="pExit">退出 (Esc)</button></div><div class="p-hint">← → 翻页 · Esc 退出</div>'; player=null; }
+  function onKey(e){
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){e.preventDefault();next();}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();prev();}
+    else if(e.key==='Escape'||e.key==='Enter'&&e.shiftKey){exit();}
+  }
+  D.addEventListener('keydown',onKey);
+  D.getElementById('pPrev').onclick=prev; D.getElementById('pNext').onclick=next; D.getElementById('pExit').onclick=exit;
+  show();
+}
+
+/* ========== 工具 ========== */
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function download(name,content,mime){
+  try{
+    var blob=new Blob([content],{type:mime||'text/plain;charset=utf-8'});
+    var a=D.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name;
+    D.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },800);
+  }catch(e){ toast('导出失败'); }
+}
+/* 一键保存全部 */
+$('#btnSave').onclick=function(){
+  docs[curDoc].html=$('#docEditor').innerHTML; saveDocs();
+  saveSheet(); saveSlides();
+  setStatus('已保存'); toast('全部已保存');
+};
+
+/* 键盘快捷键：Ctrl+S 全局保存 */
+D.addEventListener('keydown',function(e){
+  if((e.ctrlKey||e.metaKey)&&e.key==='s'){ e.preventDefault(); $('#btnSave').click(); }
+});
+})();
+</script>
+</body>
+</html>

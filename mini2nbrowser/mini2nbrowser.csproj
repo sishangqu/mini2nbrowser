@@ -30,12 +30,15 @@
   <ItemGroup>
     <EmbeddedResource Include="HomePage.html" />
     <EmbeddedResource Include="DinoGame.html" />
+    <EmbeddedResource Include="OfficeSuite.html" />
+    <EmbeddedResource Include="Assets\polar\*.png" />
   </ItemGroup>
 
   <!-- 图标嵌入为 Resource，运行时零 IO 快速加载 -->
   <ItemGroup>
     <Resource Include="app.ico" />
     <Resource Include="app_dark.ico" />
+    <Resource Include="Assets\polar\bear_head.png" />
   </ItemGroup>
 
   <ItemGroup>

@@ -26,57 +26,6 @@ using WinForms = System.Windows.Forms;
 
 namespace mini2nbrowser
 {
-    /// <summary>
-    /// 用于在 ListBox 的 ControlTemplate 内把 ListBox 的 ActualWidth 暴露给 ItemTemplate（通过 x:Name）。
-    /// WPF 不允许 DataTemplate 通过 ElementName 直接引用 ControlTemplate 中的元素，
-    /// 所以用 Freezable 作为"中间人"：它在 ControlTemplate 里订阅宽度变化，自身提供 ActualWidth，
-    /// 然后在 DataTemplate 里通过 ElementName 引用它本身即可。
-    /// </summary>
-    public class WidthProxy : Freezable
-    {
-        protected override Freezable CreateInstanceCore() => new WidthProxy();
-
-        public double ActualWidth
-        {
-            get => (double)GetValue(ActualWidthProperty);
-            private set => SetValue(ActualWidthPropertyKey, value);
-        }
-
-        private static readonly DependencyPropertyKey ActualWidthPropertyKey =
-            DependencyProperty.RegisterReadOnly(nameof(ActualWidth), typeof(double),
-                typeof(WidthProxy), new PropertyMetadata(0.0));
-
-        public static readonly DependencyProperty ActualWidthProperty =
-            ActualWidthPropertyKey.DependencyProperty;
-
-        public FrameworkElement? Source
-        {
-            get => (FrameworkElement?)GetValue(SourceProperty);
-            set => SetValue(SourceProperty, value);
-        }
-
-        public static readonly DependencyProperty SourceProperty =
-            DependencyProperty.Register(nameof(Source), typeof(FrameworkElement),
-                typeof(WidthProxy), new PropertyMetadata(null, OnSourceChanged));
-
-        private static void OnSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-        {
-            var p = (WidthProxy)d;
-            if (e.OldValue is FrameworkElement oldEl)
-                oldEl.SizeChanged -= p.OnSizeChanged;
-            if (e.NewValue is FrameworkElement newEl)
-            {
-                newEl.SizeChanged += p.OnSizeChanged;
-                p.ActualWidth = newEl.ActualWidth;
-            }
-        }
-
-        private void OnSizeChanged(object sender, SizeChangedEventArgs e)
-        {
-            ActualWidth = e.NewSize.Width;
-        }
-    }
-
     public class BoolToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
@@ -163,6 +112,9 @@ namespace mini2nbrowser
         public string CustomWindowBg { get; set; } = "";
         // 首页背景：图片路径或HTML文件路径（空=默认）
         public string HomeBackgroundImage { get; set; } = "";
+        // 媒体嗅探高级：自定义文件后缀嗅探
+        public bool CustomSniffEnabled { get; set; }
+        public string CustomSniffExts { get; set; } = ".zip,.pdf,.exe,.7z,.rar,.apk,.doc,.docx,.xls,.xlsx,.ppt,.pptx";
         public string HomeCustomHtml { get; set; } = "";
     }
 
@@ -345,6 +297,14 @@ namespace mini2nbrowser
             => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
+    /// <summary>登录信息管理：单个网站的登录态摘要</summary>
+    public class LoginSiteInfo
+    {
+        public string Domain { get; set; } = "";
+        public int CookieCount { get; set; }
+        public bool HasSession { get; set; }
+    }
+
     internal static class Dpapi
     {
         [StructLayout(LayoutKind.Sequential)]
@@ -432,6 +392,11 @@ namespace mini2nbrowser
             "mini2nbrowser", "media_site_cache.json"));
         private readonly Dictionary<MediaItem, System.Threading.CancellationTokenSource> _mediaDownloadCts = new();
         private int _activeMediaDownloads;
+        private ListCollectionView? _mediaView;
+        private string _mediaFilterKind = "";   // 空=全部 / 视频 / 音频 / 流媒体
+        private string _mediaSearch = "";
+        // ===== 极简并行启动动画 =====
+        private bool _startupOverlayHidden;
         private readonly ObservableCollection<PasswordEntry> _passwords = new();
         private readonly List<HistoryItem> _allHistory = new();
         private string? _editingScriptId;
@@ -524,10 +489,33 @@ namespace mini2nbrowser
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
         [DllImport("kernel32.dll")]
         private static extern bool SetProcessWorkingSetSize(IntPtr proc, int min, int max);
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern int GetWindowLongPtr(IntPtr hWnd, int nIndex);
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern int SetWindowLongPtr(IntPtr hWnd, int nIndex, int dwNewLong);
 
         private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
         private const int DWMWCP_ROUND = 2;
         private const int DWMWCP_DONOTROUND = 1;
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_EX_TOPMOST = 0x00000008;
+
+        /// <summary>去掉 Popup 窗口的 WS_EX_TOPMOST，使其可被其他程序遮挡（不再钉在最上层）</summary>
+        private static void RemovePopupTopmost(Popup popup)
+        {
+            try
+            {
+                if (popup == null || !popup.IsOpen || popup.Child == null) return;
+                var src = PresentationSource.FromVisual(popup.Child) as HwndSource;
+                if (src == null) return;
+                IntPtr hwnd = src.Handle;
+                if (hwnd == IntPtr.Zero) return;
+                int exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+                if ((exStyle & WS_EX_TOPMOST) != 0)
+                    SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_TOPMOST);
+            }
+            catch { }
+        }
 
         #endregion
 
@@ -676,11 +664,13 @@ namespace mini2nbrowser
             // 集合绑定即时完成（初始为空，开销极低）
             tabList.ItemsSource = _tabs;
             lbDownloads.ItemsSource = _downloads;
-            lbMedia.ItemsSource = _mediaSniffer.Items;
+            // 媒体列表走 ListCollectionView，支持分类过滤 + 搜索
+            _mediaView = new ListCollectionView(_mediaSniffer.Items) { Filter = MediaFilter };
+            lbMedia.ItemsSource = _mediaView;
             SuggestListBox.ItemsSource = _suggestItems;
             _mediaSniffer.Items.CollectionChanged += (s, e) =>
             {
-                try { Dispatcher.BeginInvoke(new Action(() => { if (!_isShuttingDown && mediaCountText != null) mediaCountText.Text = _mediaSniffer.Items.Count > 0 ? $"({_mediaSniffer.Items.Count})" : ""; })); } catch { }
+                try { Dispatcher.BeginInvoke(new Action(() => { if (!_isShuttingDown) UpdateMediaCount(); })); } catch { }
             };
 
             ApplyTheme();
@@ -693,8 +683,8 @@ namespace mini2nbrowser
             {
                 // 多实例时托盘提示区分 profile
                 _trayIcon.ToolTipText = string.IsNullOrEmpty(_profileName)
-                    ? "mini2n Browser v1.5.0"
-                    : $"mini2n Browser v1.5.0 [{_profileName}]";
+                    ? $"Polar Bear v{App.Version}"
+                    : $"Polar Bear v{App.Version} [{_profileName}]";
                 _trayIcon.TrayLeftMouseUp += (s, e) => RestoreFromTray();
             }
 
@@ -702,6 +692,20 @@ namespace mini2nbrowser
             Loaded += MainWindow_Loaded;
             Closing += MainWindow_Closing;
             PreviewKeyDown += MainWindow_PreviewKeyDown;
+            // 联想浮层跟随：窗口移动/缩放时强制 Popup 重新定位
+            LocationChanged += OnWindowTransformChanged;
+            SizeChanged += OnWindowTransformChanged;
+            // Popup 打开后去掉 WS_EX_TOPMOST，使其可被其他程序遮挡（不再钉在最上层）
+            SuggestPopup.Opened += (_, _) => RemovePopupTopmost(SuggestPopup);
+            MediaSniffPopup.Opened += (_, _) => RemovePopupTopmost(MediaSniffPopup);
+            // 窗口失活（切到其他程序）时收起联想浮层和嗅探面板
+            Deactivated += (_, _) =>
+            {
+                try { if (SuggestPopup != null && SuggestPopup.IsOpen) CloseSuggestPopup(); } catch { }
+                try { if (MediaSniffPopup != null && MediaSniffPopup.IsOpen) MediaSniffPopup.IsOpen = false; } catch { }
+            };
+            // 点击窗口内非地址栏/非浮层区域时关闭联想浮层（标准浏览器行为）
+            PreviewMouseDown += MainWindow_PreviewMouseDownSuggest;
             // 鼠标手势（v1.7）：右键拖动 4 方向，松开时判定
             PreviewMouseRightButtonDown += MainWindow_PreviewMouseRightButtonDown;
             PreviewMouseRightButtonUp += MainWindow_PreviewMouseRightButtonUp;
@@ -735,18 +739,81 @@ namespace mini2nbrowser
             // 延迟到空闲优先级创建首个标签页，让窗口先渲染出来（毫秒级冷启动关键）
             Dispatcher.BeginInvoke(new Action(NewTab),
                 System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+
+            // 启动动画兜底：最迟 3.5 秒淡出（防止首页加载异常/过慢时遮挡界面）
+            var startupTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(3500)
+            };
+            startupTimer.Tick += (s2, e2) => { startupTimer.Stop(); HideStartupOverlay(); };
+            startupTimer.Start();
         }
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             SetRoundedCorners(true);
             InitPdfPanel();
+            // 启动极简并行动画（像素熊 + 跳动点），WebView2 并行初始化不受影响
+            StartStartupAnimation();
             // 窗口已渲染可见后，后台异步加载非首屏数据
             await System.Threading.Tasks.Task.Yield();
             try { LoadScripts(); } catch { }
             try { LoadHistory(); } catch { }
             try { LoadBookmarks(); } catch { }
             try { LoadPasswords(); } catch { }
+        }
+
+        // ===== 极简并行启动动画：绘制像素熊 + 跳动点，纯轻量动画，与 WebView2 初始化并行，不阻塞 =====
+        private void StartStartupAnimation()
+        {
+            try
+            {
+                // 北极熊头图片已在 XAML 中静态加载，此处只启动红绿黄三色点跳动
+                var tt = new[] { dotT1, dotT2, dotT3 };
+                var sb = new System.Windows.Media.Animation.Storyboard();
+                for (int i = 0; i < tt.Length; i++)
+                {
+                    var anim = new System.Windows.Media.Animation.DoubleAnimation(0, -10, TimeSpan.FromMilliseconds(520))
+                    {
+                        AutoReverse = true,
+                        RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever,
+                        BeginTime = TimeSpan.FromMilliseconds(i * 180)
+                    };
+                    System.Windows.Media.Animation.Storyboard.SetTarget(anim, tt[i]);
+                    System.Windows.Media.Animation.Storyboard.SetTargetProperty(anim,
+                        new System.Windows.PropertyPath(System.Windows.Media.TranslateTransform.YProperty));
+                    sb.Children.Add(anim);
+                }
+                sb.Begin();
+            }
+            catch { }
+        }
+
+        /// <summary>淡出启动动画层（幂等，只执行一次）</summary>
+        private void HideStartupOverlay()
+        {
+            if (_startupOverlayHidden || startupOverlay == null) return;
+            _startupOverlayHidden = true;
+            try
+            {
+                var anim = new System.Windows.Media.Animation.DoubleAnimation(
+                    1.0, 0.0, TimeSpan.FromMilliseconds(320))
+                {
+                    EasingFunction = new System.Windows.Media.Animation.QuadraticEase
+                    {
+                        EasingMode = System.Windows.Media.Animation.EasingMode.EaseInOut
+                    }
+                };
+                anim.Completed += (s, e) =>
+                {
+                    try { startupOverlay.Visibility = Visibility.Collapsed; } catch { }
+                };
+                startupOverlay.BeginAnimation(System.Windows.Controls.Control.OpacityProperty, anim);
+            }
+            catch
+            {
+                try { startupOverlay.Visibility = Visibility.Collapsed; } catch { }
+            }
         }
 
         /// <summary>获取共享 WebView2 环境（开启扩展支持）。无痕标签也用同一环境，仅 controller 选项不同。</summary>
@@ -836,9 +903,7 @@ namespace mini2nbrowser
             }
             else if (WindowState == WindowState.Minimized)
             {
-                // 最小化到托盘：隐藏窗口，进程驻留后台，WebView2 全部保活
-                Hide();
-                // 延迟回收内存，释放工作集
+                // 最小化保留在任务栏（不隐藏到托盘），仅延迟回收内存
                 _ = Task.Delay(500).ContinueWith(_ =>
                 {
                     if (_isShuttingDown) return;
@@ -894,6 +959,10 @@ namespace mini2nbrowser
                 _isShuttingDown = true;
                 try
                 {
+                    try { CloseSuggestPopup(); } catch { }
+                    try { readerOverlay.Visibility = Visibility.Collapsed; } catch { }
+                    try { qrOverlay.Visibility = Visibility.Collapsed; } catch { }
+
                     _memoryTimer?.Stop();
                     _memoryTimer?.Dispose();
                     _freezeTimer?.Stop();
@@ -1944,7 +2013,8 @@ namespace mini2nbrowser
             var tab = tabList.SelectedItem as TabInfo;
             if (tab == null || !_webViews.TryGetValue(tab.Id, out var wv) || wv.CoreWebView2 == null) return;
             var url = wv.CoreWebView2.Source;
-            if (string.IsNullOrEmpty(url) || url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase)) return;
+            if (string.IsNullOrEmpty(url) || url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase)
+                || url.Contains("OfficeSuite.html", StringComparison.OrdinalIgnoreCase)) return;
 
             var existing = _bookmarks.FirstOrDefault(b => b.Url == url);
             if (existing != null) { _bookmarks.Remove(existing); try { _localDb?.RemoveBookmark(url); } catch { } }
@@ -2158,6 +2228,22 @@ namespace mini2nbrowser
         #region 媒体嗅探
         private void SetupMediaSniffer(Microsoft.Web.WebView2.Wpf.WebView2 wv)
         {
+            // 恢复高级设置（自定义文件后缀嗅探），幂等
+            try
+            {
+                _mediaSniffer.CustomEnabled = _config.CustomSniffEnabled;
+                _mediaSniffer.CustomExts = (_config.CustomSniffExts ?? "")
+                    .Split(',', '，', ';', '；')
+                    .Select(x => x.Trim().TrimStart('.'))
+                    .Where(x => x.Length > 0)
+                    .Select(x => "." + x.ToLowerInvariant())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                if (chkCustomSniff != null) chkCustomSniff.IsChecked = _config.CustomSniffEnabled;
+                if (txtCustomExts != null) txtCustomExts.Text = _config.CustomSniffExts;
+            }
+            catch { }
+
             // WebResourceResponseReceived：响应阶段触发，能拿到 Content-Type，无需注册 filter，性能开销小
             _mediaSniffer.Attach(wv.CoreWebView2, () =>
             {
@@ -2172,18 +2258,248 @@ namespace mini2nbrowser
 
         private void BtnMediaSniffer_Click(object sender, RoutedEventArgs e)
         {
-            mediaSnifferOverlay.Visibility = mediaSnifferOverlay.Visibility == Visibility.Visible
-                ? Visibility.Collapsed : Visibility.Visible;
+            MediaSniffPopup.IsOpen = !MediaSniffPopup.IsOpen;
         }
 
         private void BtnCloseMediaSniffer_Click(object sender, RoutedEventArgs e)
-            => mediaSnifferOverlay.Visibility = Visibility.Collapsed;
+            => MediaSniffPopup.IsOpen = false;
 
-        private void MediaSnifferOverlay_MouseDown(object sender, MouseButtonEventArgs e)
-            => mediaSnifferOverlay.Visibility = Visibility.Collapsed;
+        /// <summary>高级设置面板：展开/收起</summary>
+        private void BtnMediaAdv_Click(object sender, RoutedEventArgs e)
+        {
+            if (mediaAdvPanel == null) return;
+            mediaAdvPanel.Visibility = mediaAdvPanel.Visibility == Visibility.Visible
+                ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        /// <summary>文件嗅探开关</summary>
+        private void ChkCustomSniff_Click(object sender, RoutedEventArgs e)
+        {
+            if (chkCustomSniff == null || _mediaSniffer == null) return;
+            _mediaSniffer.CustomEnabled = chkCustomSniff.IsChecked == true;
+            _config.CustomSniffEnabled = _mediaSniffer.CustomEnabled;
+            SaveConfig();
+        }
+
+        /// <summary>应用自定义后缀列表</summary>
+        private void BtnApplyCustomExts_Click(object sender, RoutedEventArgs e)
+        {
+            if (txtCustomExts == null || _mediaSniffer == null) return;
+            var raw = txtCustomExts.Text ?? "";
+            var list = raw.Split(',', '，', ';', '；', ' ', '\n', '\r')
+                         .Select(x => x.Trim().TrimStart('.'))
+                         .Where(x => x.Length > 0)
+                         .Select(x => "." + x.ToLowerInvariant())
+                         .Distinct(StringComparer.OrdinalIgnoreCase)
+                         .ToArray();
+            _mediaSniffer.CustomExts = list;
+            _config.CustomSniffExts = string.Join(",", list.Select(x => x.TrimStart('.')));
+            SaveConfig();
+            if (forceSniffStatus != null)
+                forceSniffStatus.Text = list.Length > 0
+                    ? $"已应用 {list.Length} 个自定义后缀"
+                    : "未输入有效后缀";
+        }
 
         private void BtnClearMediaList_Click(object sender, RoutedEventArgs e)
             => _mediaSniffer.Clear();
+
+        /// <summary>媒体列表过滤：分类 + 关键字</summary>
+        private bool MediaFilter(object obj)
+        {
+            if (obj is not MediaItem it) return false;
+            if (_mediaFilterKind.Length > 0 && !string.Equals(it.Kind, _mediaFilterKind, StringComparison.Ordinal))
+                return false;
+            if (_mediaSearch.Length > 0 &&
+                !it.Url.Contains(_mediaSearch, StringComparison.OrdinalIgnoreCase) &&
+                !it.PageTitle.Contains(_mediaSearch, StringComparison.OrdinalIgnoreCase) &&
+                !it.PageUrl.Contains(_mediaSearch, StringComparison.OrdinalIgnoreCase))
+                return false;
+            return true;
+        }
+
+        /// <summary>更新媒体面板统计（总数/分类数），并刷新过滤视图</summary>
+        private void UpdateMediaCount()
+        {
+            try
+            {
+                if (mediaCountText != null)
+                    mediaCountText.Text = _mediaSniffer.Items.Count > 0 ? $"({_mediaSniffer.Items.Count})" : "";
+                if (mediaStatsText != null)
+                {
+                    int v = 0, a = 0, s = 0, f = 0;
+                    foreach (var it in _mediaSniffer.Items)
+                    {
+                        if (it.Kind == "视频") v++;
+                        else if (it.Kind == "音频") a++;
+                        else if (it.Kind == "流媒体") s++;
+                        else if (it.Kind == "文件") f++;
+                    }
+                    mediaStatsText.Text = f > 0
+                        ? $"共 {_mediaSniffer.Items.Count} 项 · 视频 {v} · 音频 {a} · 流媒体 {s} · 文件 {f}"
+                        : $"共 {_mediaSniffer.Items.Count} 项 · 视频 {v} · 音频 {a} · 流媒体 {s}";
+                }
+                _mediaView?.Refresh();
+            }
+            catch { }
+        }
+
+        /// <summary>分类过滤按钮（全部/视频/音频/流媒体）</summary>
+        private void BtnMediaFilter_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button b)
+            {
+                _mediaFilterKind = b.Tag?.ToString() ?? "";
+                _mediaView?.Refresh();
+                UpdateMediaFilterButtons();
+                UpdateMediaCount();
+            }
+        }
+
+        /// <summary>高亮当前分类按钮</summary>
+        private void UpdateMediaFilterButtons()
+        {
+            try
+            {
+                if (btnFilterAll == null) return;
+                SetFilterButton(btnFilterAll, _mediaFilterKind.Length == 0);
+                SetFilterButton(btnFilterVideo, _mediaFilterKind == "视频");
+                SetFilterButton(btnFilterAudio, _mediaFilterKind == "音频");
+                SetFilterButton(btnFilterStream, _mediaFilterKind == "流媒体");
+                SetFilterButton(btnFilterFile, _mediaFilterKind == "文件");
+            }
+            catch { }
+        }
+
+        private static void SetFilterButton(Button b, bool active)
+        {
+            if (active)
+            {
+                b.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x00, 0x78, 0xD4));
+                b.Foreground = System.Windows.Media.Brushes.White;
+                b.FontWeight = FontWeights.SemiBold;
+            }
+            else
+            {
+                b.Background = System.Windows.Media.Brushes.Transparent;
+                b.Foreground = (System.Windows.Media.Brush)Application.Current.FindResource("TextColor");
+                b.FontWeight = FontWeights.Normal;
+            }
+        }
+
+        /// <summary>媒体面板搜索框</summary>
+        private void TxtMediaSearch_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            _mediaSearch = txtMediaSearch?.Text?.Trim() ?? "";
+            _mediaView?.Refresh();
+            UpdateMediaCount();
+        }
+
+        /// <summary>强力嗅探：扫描所有标签页 DOM / 资源，把页面里的媒体源补进列表</summary>
+        private async void BtnForceSniff_Click(object sender, RoutedEventArgs e)
+        {
+            if (btnForceSniff == null) return;
+            btnForceSniff.IsEnabled = false;
+            if (forceSniffStatus != null) forceSniffStatus.Text = "正在强力嗅探…";
+            int added = 0;
+            var wvs = _webViews.Values.ToList();
+            foreach (var wv in wvs)
+            {
+                try { added += await ForceSniffOneAsync(wv); } catch { }
+            }
+            if (forceSniffStatus != null)
+                forceSniffStatus.Text = added > 0 ? $"强力嗅探完成，发现 {added} 个媒体" : "强力嗅探完成，未发现新媒体";
+            UpdateMediaCount();
+            btnForceSniff.IsEnabled = true;
+        }
+
+        private static readonly string ForceSniffJs = @"(() => {
+  var seen = {}; var out = [];
+  function push(u, k) {
+    try {
+      u = (u || '').trim();
+      if (!u) return;
+      if (u.indexOf('data:') === 0 || u.indexOf('blob:') === 0) return;
+      if (seen[u]) return;
+      seen[u] = 1;
+      out.push({ u: u, k: k });
+    } catch (e) {}
+  }
+  function isAudio(u) { return /\.(mp3|m4a|ogg|wav|aac|flac|opus|mid|midi|amr|wma|ape|aiff)(\?|$)/i.test(u); }
+  try {
+    var medias = document.querySelectorAll('video,audio');
+    for (var i = 0; i < medias.length; i++) {
+      var el = medias[i];
+      var k = el.tagName === 'VIDEO' ? 'video' : 'audio';
+      if (el.src) push(el.src, k);
+      if (el.currentSrc) push(el.currentSrc, k);
+      var srcs = el.querySelectorAll('source');
+      for (var j = 0; j < srcs.length; j++) { if (srcs[j].src) push(srcs[j].src, k); }
+    }
+    var allSrc = document.querySelectorAll('source');
+    for (var m = 0; m < allSrc.length; m++) { if (allSrc[m].src) push(allSrc[m].src, isAudio(allSrc[m].src) ? 'audio' : 'video'); }
+    if (performance && performance.getEntriesByType) {
+      var perfs = performance.getEntriesByType('resource');
+      for (var n = 0; n < perfs.length; n++) {
+        var r = perfs[n]; var u = r.name || ''; if (!u) continue;
+        var it = (r.initiatorType || '').toLowerCase();
+        if (it === 'video' || it === 'audio' || it === 'media') push(u, it === 'audio' ? 'audio' : 'video');
+        else if (/\.(m3u8|mpd|m3u)(\?|$)/i.test(u)) push(u, 'stream');
+        else if (/\.(mp4|flv|webm|mov|mkv|m4v|ts|wmv|mpg|mpeg|3gp|f4v|mts|m2ts|ogv|rm|rmvb|avi|vob)(\?|$)/i.test(u)) push(u, 'video');
+        else if (/\.(mp3|m4a|ogg|wav|aac|flac|opus|mid|amr|wma|ape|aiff)(\?|$)/i.test(u)) push(u, 'audio');
+      }
+    }
+    if (window.videojs && typeof window.videojs.getAllPlayers === 'function') {
+      var ps = window.videojs.getAllPlayers();
+      for (var q = 0; q < ps.length; q++) { try { var s = ps[q] && ps[q].currentSrc && ps[q].currentSrc(); if (s) push(s, 'video'); } catch (e) {} }
+    }
+  } catch (e) {}
+  return JSON.stringify(out);
+})()";
+
+        private async Task<int> ForceSniffOneAsync(Microsoft.Web.WebView2.Wpf.WebView2 wv)
+        {
+            if (wv.CoreWebView2 == null) return 0;
+            string title = "", pageUrl = "";
+            try { title = wv.CoreWebView2.DocumentTitle ?? ""; pageUrl = wv.CoreWebView2.Source ?? ""; } catch { }
+            string raw;
+            try { raw = await wv.CoreWebView2.ExecuteScriptAsync(ForceSniffJs); }
+            catch { return 0; }
+            if (string.IsNullOrWhiteSpace(raw)) return 0;
+
+            var hits = new List<MediaDomHit>();
+            try
+            {
+                var jsonStr = System.Text.Json.JsonSerializer.Deserialize<string>(raw);
+                if (!string.IsNullOrWhiteSpace(jsonStr))
+                {
+                    var opts = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    hits = System.Text.Json.JsonSerializer.Deserialize<List<MediaDomHit>>(jsonStr, opts) ?? new();
+                }
+            }
+            catch { return 0; }
+
+            int added = 0;
+            foreach (var h in hits)
+            {
+                if (string.IsNullOrWhiteSpace(h.U)) continue;
+                string kind = h.K switch
+                {
+                    "audio" => "音频",
+                    "stream" => "流媒体",
+                    _ => "视频"
+                };
+                _mediaSniffer.AddFromDom(h.U, kind, "", "", title, pageUrl);
+                added++;
+            }
+            return added;
+        }
+
+        private sealed class MediaDomHit
+        {
+            public string U { get; set; } = "";
+            public string K { get; set; } = "";
+        }
 
         private void BtnRemoveMedia_Click(object sender, RoutedEventArgs e)
         {
@@ -2205,10 +2521,9 @@ namespace mini2nbrowser
 
             var ext = string.IsNullOrEmpty(item.Ext) ? "bin" : item.Ext;
             if (item.Ext.Equals("m3u8", StringComparison.OrdinalIgnoreCase)) ext = "ts";
-            var baseName = "media_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
             var sfd = new Microsoft.Win32.SaveFileDialog
             {
-                FileName = $"{baseName}.{ext}",
+                FileName = SuggestMediaFileName(item, ext),
                 Filter = $"{ext.ToUpper()} 文件|*.{ext}|所有文件|*.*"
             };
             if (sfd.ShowDialog() != true) return;
@@ -2255,6 +2570,37 @@ namespace mini2nbrowser
             {
                 try { System.Windows.Clipboard.SetText(item.Url); } catch { }
             }
+        }
+
+        /// <summary>从媒体 URL / 页面标题提取有意义的保存文件名（学猫抓：直接按资源名命名）</summary>
+        private static string SuggestMediaFileName(MediaItem item, string ext)
+        {
+            try
+            {
+                // 1) 优先从 URL 提取文件名（去掉 query/fragment）
+                var u = item.Url ?? "";
+                var q = u.IndexOf('?'); if (q > 0) u = u[..q];
+                var h = u.IndexOf('#'); if (h > 0) u = u[..h];
+                u = u.TrimEnd('/');
+                var seg = u[(u.LastIndexOf('/') + 1)..];
+                if (!string.IsNullOrWhiteSpace(seg) && seg.Contains('.'))
+                {
+                    var name = seg;
+                    var dot = name.LastIndexOf('.');
+                    if (dot > 0) name = name[..dot];
+                    foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+                    if (name.Length > 0 && name.Length < 120) return name + "." + ext;
+                }
+                // 2) URL 无文件名 → 用页面标题
+                if (!string.IsNullOrWhiteSpace(item.PageTitle))
+                {
+                    var t = item.PageTitle.Trim();
+                    foreach (var c in Path.GetInvalidFileNameChars()) t = t.Replace(c, '_');
+                    if (t.Length > 0 && t.Length < 120) return t + "." + ext;
+                }
+            }
+            catch { }
+            return "media_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "." + ext;
         }
 
         private void UpdateMediaBadge()
@@ -2369,7 +2715,8 @@ namespace mini2nbrowser
         private void AddHistory(string url, string title)
         {
             if (string.IsNullOrEmpty(url) || url.StartsWith("about:") ||
-                url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase)) return;
+                url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase) ||
+                url.Contains("OfficeSuite.html", StringComparison.OrdinalIgnoreCase)) return;
             _allHistory.RemoveAll(h => h.Url == url);
             _allHistory.Insert(0, new HistoryItem { Url = url, Title = string.IsNullOrEmpty(title) ? url : title, VisitedAt = DateTime.Now });
             if (_allHistory.Count > 500) _allHistory.RemoveRange(500, _allHistory.Count - 500);
@@ -2731,7 +3078,7 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
         private static string? _homePageTempPath;
         private static string? _dinoGameTempPath;
 
-        /// <summary>将内嵌的 HomePage.html 解压到临时目录（仅首次），返回文件路径</summary>
+        /// <summary>将内嵌的 HomePage.html 及 14 张北极熊图解压到临时目录（仅首次），返回文件路径</summary>
         private static string EnsureHomePage()
         {
             if (_homePageTempPath != null) return _homePageTempPath;
@@ -2744,6 +3091,17 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             {
                 using var fs = File.Create(path);
                 stream.CopyTo(fs);
+            }
+            // 解压 14 张北极熊首页轮播图到同目录（bear_01.png ~ bear_14.png）
+            var asm = typeof(MainWindow).Assembly;
+            for (int i = 1; i <= 14; i++)
+            {
+                string resName = $"mini2nbrowser.Assets.polar.bear_{i:D2}.png";
+                using Stream? imgStream = asm.GetManifestResourceStream(resName);
+                if (imgStream == null) continue;
+                var imgPath = Path.Combine(dir, $"bear_{i:D2}.png");
+                using var imgFs = File.Create(imgPath);
+                imgStream.CopyTo(imgFs);
             }
             _homePageTempPath = path;
             return path;
@@ -2765,6 +3123,32 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             }
             _dinoGameTempPath = path;
             return path;
+        }
+
+        /// <summary>将 WebView2 网络错误状态转为可读的中文错误原因（用于离线游戏页左上角显示）</summary>
+        private static string WebErrorText(CoreWebView2WebErrorStatus status)
+        {
+            return status switch
+            {
+                CoreWebView2WebErrorStatus.HostNameNotResolved => "无法解析域名（DNS 查找失败）",
+                CoreWebView2WebErrorStatus.CannotConnect => "无法连接到服务器",
+                CoreWebView2WebErrorStatus.ServerUnreachable => "服务器不可达",
+                CoreWebView2WebErrorStatus.Timeout => "连接超时",
+                CoreWebView2WebErrorStatus.ConnectionAborted => "连接被中止",
+                CoreWebView2WebErrorStatus.ConnectionReset => "连接被重置",
+                CoreWebView2WebErrorStatus.Disconnected => "连接已断开",
+                CoreWebView2WebErrorStatus.CertificateCommonNameIsIncorrect => "安全证书域名不匹配",
+                CoreWebView2WebErrorStatus.CertificateExpired => "安全证书已过期",
+                CoreWebView2WebErrorStatus.CertificateRevoked => "安全证书已被吊销",
+                CoreWebView2WebErrorStatus.CertificateIsInvalid => "安全证书无效",
+                CoreWebView2WebErrorStatus.ClientCertificateContainsErrors => "客户端证书存在错误",
+                CoreWebView2WebErrorStatus.ErrorHttpInvalidServerResponse => "服务器返回无效响应",
+                CoreWebView2WebErrorStatus.OperationCanceled => "操作已取消",
+                CoreWebView2WebErrorStatus.RedirectFailed => "重定向失败",
+                CoreWebView2WebErrorStatus.ValidAuthenticationCredentialsRequired => "需要有效身份验证凭据",
+                CoreWebView2WebErrorStatus.ValidProxyAuthenticationRequired => "需要有效代理身份验证",
+                _ => $"网络错误（{status}）"
+            };
         }
 
         private string GetHomeUrl()
@@ -2789,6 +3173,33 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                 bgImg = "&bg=" + Uri.EscapeDataString(_config.HomeBackgroundImage);
             }
             return $"file:///{EnsureHomePage().Replace('\\', '/')}?theme={theme}&engine={engKey}{bgImg}";
+        }
+
+        private static string? _officeSuiteTempPath;
+
+        /// <summary>将内嵌的 OfficeSuite.html 解压到临时目录（仅首次），返回文件路径</summary>
+        private static string EnsureOfficeSuite()
+        {
+            if (_officeSuiteTempPath != null) return _officeSuiteTempPath;
+            var dir = Path.Combine(Path.GetTempPath(), "mini2nbrowser");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, "OfficeSuite.html");
+            using var stream = typeof(MainWindow).Assembly
+                .GetManifestResourceStream("mini2nbrowser.OfficeSuite.html");
+            if (stream != null)
+            {
+                using var fs = File.Create(path);
+                stream.CopyTo(fs);
+            }
+            _officeSuiteTempPath = path;
+            return path;
+        }
+
+        /// <summary>极简办公套件页 URL</summary>
+        private string GetOfficeUrl()
+        {
+            string theme = _config.IsDarkMode ? "dark" : "light";
+            return $"file:///{EnsureOfficeSuite().Replace('\\', '/')}?theme={theme}";
         }
 
         private void BtnNewTab_Click(object sender, RoutedEventArgs e) => NewTab();
@@ -2832,6 +3243,8 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                     tabList.SelectedItem = tab;
                     webViewContainer.Children.Add(wv);
                     _webViews[tab.Id] = wv;
+                    // 点击网页区域（WebView2 获焦）时关闭联想浮层（标准浏览器行为）
+                    wv.GotFocus += (_, _) => { try { if (SuggestPopup != null && SuggestPopup.IsOpen) CloseSuggestPopup(); } catch { } };
                 });
 
                 // 使用共享环境（开启扩展支持），通过 CreationProperties 区分无痕/普通
@@ -2909,6 +3322,13 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
 
                 wv.CoreWebView2.NavigationStarting += (s, e) =>
                 {
+                    // about:office → 内置极简办公套件（文档/表格/演示）
+                    if (e.Uri.StartsWith("about:office", StringComparison.OrdinalIgnoreCase))
+                    {
+                        e.Cancel = true;
+                        try { wv.CoreWebView2.Navigate(GetOfficeUrl()); } catch { }
+                        return;
+                    }
                     SafeDispatch(() =>
                     {
                         if (tabList.SelectedItem == tab)
@@ -2926,19 +3346,44 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                     {
                         tab.LastActiveTime = DateTime.Now;
 
+                        // 首次首页加载完成 → 淡出启动动画（与 WebView2 初始化并行，不阻塞）
+                        if (e.IsSuccess)
+                        {
+                            var doneSrc = wv.CoreWebView2.Source ?? "";
+                            if (doneSrc.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase))
+                                HideStartupOverlay();
+                        }
+
                         // ===== 离线检测：导航失败（断网/DNS失败/服务器拒绝）→ 显示小恐龙游戏 =====
                         if (!e.IsSuccess)
                         {
                             var curSrc = wv.CoreWebView2.Source ?? "";
+                            var errText = WebErrorText(e.WebErrorStatus);
                             // 已经在游戏页/主页 → 不再重复跳转（防止死循环）
                             if (curSrc.Contains("DinoGame.html", StringComparison.OrdinalIgnoreCase)
                                 || curSrc.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase))
                             {
+                                // 已在游戏页：直接更新页面上的错误原因，无需重新导航
+                                if (curSrc.Contains("DinoGame.html", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    try
+                                    {
+                                        var jsErr = System.Text.Json.JsonSerializer.Serialize(errText);
+                                        _ = wv.CoreWebView2.ExecuteScriptAsync(
+                                            $"if(window.showNetError)window.showNetError({jsErr});");
+                                    }
+                                    catch { }
+                                }
                                 btnStop.Visibility = Visibility.Collapsed;
                                 btnReload.Visibility = Visibility.Visible;
                                 return;
                             }
-                            try { wv.CoreWebView2.Navigate("file:///" + EnsureDinoGame().Replace('\\', '/')); } catch { }
+                            try
+                            {
+                                var gameUrl = "file:///" + EnsureDinoGame().Replace('\\', '/');
+                                wv.CoreWebView2.Navigate(gameUrl + "?err=" + Uri.EscapeDataString(errText));
+                            }
+                            catch { }
                             tab.Title = "离线了 — 小恐龙游戏";
                             if (tabList.SelectedItem == tab) UpdatePageTitle(tab.Title);
                             btnStop.Visibility = Visibility.Collapsed;
@@ -2948,8 +3393,11 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
 
                         if (tabList.SelectedItem == tab)
                         {
-                            var url = wv.CoreWebView2.Source;
-                            txtUrl.Text = url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase) ? "" : url;
+                            var url = wv.CoreWebView2.Source ?? "";
+                            _suppressTextChanged = true;
+                            txtUrl.Text = url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase) ? ""
+                                : url.Contains("OfficeSuite.html", StringComparison.OrdinalIgnoreCase) ? "about:office" : url;
+                            CloseSuggestPopup();
                             btnStop.Visibility = Visibility.Collapsed;
                             btnReload.Visibility = Visibility.Visible;
                             btnBack.IsEnabled = wv.CoreWebView2.CanGoBack;
@@ -2960,15 +3408,16 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                         // 无痕标签页：不记历史、不自动填充密码、不捕获密码
                         if (!incognito)
                         {
-                            try { AddHistory(wv.CoreWebView2.Source, tab.Title); } catch { }
-                            try { InjectScripts(wv, wv.CoreWebView2.Source); } catch { }
-                            try { InjectPasswordAutofill(wv, wv.CoreWebView2.Source); } catch { }
+                            var src = wv.CoreWebView2.Source ?? "";
+                            try { AddHistory(src, tab.Title); } catch { }
+                            try { InjectScripts(wv, src); } catch { }
+                            try { InjectPasswordAutofill(wv, src); } catch { }
                             try { wv.CoreWebView2.ExecuteScriptAsync(PasswordCaptureScript); } catch { }
                         }
                         else
                         {
                             // 无痕标签页仍可注入用户脚本（用户主动选择），但不记录任何数据
-                            try { InjectScripts(wv, wv.CoreWebView2.Source); } catch { }
+                            try { InjectScripts(wv, wv.CoreWebView2.Source ?? ""); } catch { }
                         }
                     });
                 };
@@ -3013,6 +3462,8 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
         private void TabList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (tabList.SelectedItem is not TabInfo tab) return;
+            // 切换标签页时收起地址栏联想浮层（只应在键入时出现）
+            CloseSuggestPopup();
             // 如果切换到已冻结标签，自动解冻
             if (tab.IsFrozen) UnfreezeTab(tab);
             // 更新活跃时间
@@ -3025,7 +3476,10 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             {
                 wv.Visibility = Visibility.Visible;
                 var url = wv.CoreWebView2?.Source ?? "";
-                txtUrl.Text = url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase) ? "" : url;
+                _suppressTextChanged = true;
+                txtUrl.Text = url.Contains("HomePage.html", StringComparison.OrdinalIgnoreCase) ? ""
+                    : url.Contains("OfficeSuite.html", StringComparison.OrdinalIgnoreCase) ? "about:office" : url;
+                CloseSuggestPopup();
                 UpdateBookmarkIcon(url);
                 btnBack.IsEnabled = wv.CoreWebView2?.CanGoBack ?? false;
                 btnForward.IsEnabled = wv.CoreWebView2?.CanGoForward ?? false;
@@ -3125,7 +3579,7 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
 
         private void UpdatePageTitle(string title)
         {
-            string display = string.IsNullOrEmpty(title) ? "2ⁿ Browser" : title;
+            string display = string.IsNullOrEmpty(title) ? "Polar Bear" : title;
             // 无痕标签页标题加前缀（仅在当前选中标签页是无痕时）
             var tab = tabList.SelectedItem as TabInfo;
             if (tab?.IsIncognito == true && !display.StartsWith("[无痕]"))
@@ -3161,11 +3615,13 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                 IconData = "M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z" },
             new() { Tag = "passwords", Label = "密码管理", Description = "查看和管理已保存的密码",
                 IconData = "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z" },
+            new() { Tag = "logins", Label = "登录信息", Description = "查看和管理各网站的登录状态（小红书、Microsoft、Google 等）",
+                IconData = "M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-1 12H7c-.55 0-1-.45-1-1v-8c0-.55.45-1 1-1h10c.55 0 1 .45 1 1v8c0 .55-.45 1-1 1z" },
             new() { Tag = "extensions", Label = "扩展", Description = "管理浏览器扩展程序",
                 IconData = "M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5C13 2.12 11.88 1 10.5 1S8 2.12 8 3.5V5H4c-1.1 0-1.99.9-1.99 2v3.8H3.5C4.88 11.8 6 12.93 6 14.3s-1.12 2.5-2.5 2.5H2V20c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2v-9c0-1.1-.9-2-2-2z" },
             new() { Tag = "scripts", Label = "油猴脚本", Description = "管理用户脚本，自定义网页行为",
                 IconData = "M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0L19.2 12l-4.6-4.6L16 6l6 6-6 6-1.4-1.4z" },
-            new() { Tag = "about", Label = "关于", Description = "关于 mini2n Browser",
+            new() { Tag = "about", Label = "关于", Description = "关于 Polar Bear",
                 IconData = "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" }
         };
 
@@ -3192,6 +3648,7 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                 "search" => BuildSearchPage(),
                 "privacy" => BuildPrivacyPage(),
                 "passwords" => BuildPasswordsPage(),
+                "logins" => BuildLoginsPage(),
                 "extensions" => BuildExtensionsPage(),
                 "scripts" => BuildScriptsPage(),
                 "about" => BuildAboutPage(),
@@ -4090,6 +4547,230 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             return MakeSection("密码管理", stack);
         }
 
+        // ===== 登录信息管理 =====
+        private FrameworkElement BuildLoginsPage()
+        {
+            var stack = new StackPanel();
+
+            var tip = new TextBlock
+            {
+                Text = "各网站登录信息（Cookie）保存在浏览器数据目录的 WebViewData 文件夹中，按网站独立保存，重启后自动保留登录状态。已登录的网站显示绿色圆点，可单独或全部清除。",
+                FontSize = 12, Foreground = (Brush)FindResource("TextColor"),
+                Opacity = 0.6, TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+            stack.Children.Add(tip);
+
+            // 保存目录显示 + 打开按钮
+            string webData = Path.Combine(_dataDir, "WebViewData");
+            var dirRow = new Grid { Margin = new Thickness(0, 0, 0, 12) };
+            dirRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            dirRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            dirRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var dirLbl = new TextBlock
+            {
+                Text = "保存目录：", FontSize = 12,
+                Foreground = (Brush)FindResource("TextColor"), Opacity = 0.6,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(dirLbl, 0);
+            var dirTxt = new TextBlock
+            {
+                Text = webData, FontSize = 12,
+                Foreground = (Brush)FindResource("TextColor"), Opacity = 0.75,
+                TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 0, 0), ToolTip = webData
+            };
+            Grid.SetColumn(dirTxt, 1);
+            var btnOpenDir = new Button
+            {
+                Content = "打开文件夹", Height = 28, Padding = new Thickness(10, 0, 10, 0),
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0)
+            };
+            btnOpenDir.Click += (s, e) => { try { System.Diagnostics.Process.Start("explorer.exe", webData); } catch { } };
+            Grid.SetColumn(btnOpenDir, 2);
+            dirRow.Children.Add(dirLbl);
+            dirRow.Children.Add(dirTxt);
+            dirRow.Children.Add(btnOpenDir);
+            stack.Children.Add(dirRow);
+
+            // 操作按钮行
+            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
+            var btnRefresh = new Button { Content = "🔄 刷新", Height = 30, Padding = new Thickness(12, 0, 12, 0) };
+            var btnClearAll = new Button
+            {
+                Content = "🗑 清除全部登录信息", Height = 30, Padding = new Thickness(12, 0, 12, 0),
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            btnRow.Children.Add(btnRefresh);
+            btnRow.Children.Add(btnClearAll);
+            stack.Children.Add(btnRow);
+
+            var status = new TextBlock
+            {
+                FontSize = 12, Foreground = (Brush)FindResource("TextColor"),
+                Opacity = 0.7, Margin = new Thickness(0, 0, 0, 8),
+                Visibility = Visibility.Collapsed
+            };
+            stack.Children.Add(status);
+
+            var listPanel = new StackPanel();
+            stack.Children.Add(listPanel);
+
+            // 刷新并列出各网站登录信息
+            async System.Threading.Tasks.Task RefreshAsync()
+            {
+                status.Visibility = Visibility.Collapsed;
+                listPanel.Children.Clear();
+                var wv = _webViews.Values.FirstOrDefault(v =>
+                            v.CoreWebView2 != null && !(v.CoreWebView2.Profile?.IsInPrivateModeEnabled ?? true))
+                        ?? _webViews.Values.FirstOrDefault(v => v.CoreWebView2 != null);
+                if (wv?.CoreWebView2 == null)
+                {
+                    status.Text = "暂无可用标签页，请先打开一个网页";
+                    status.Visibility = Visibility.Visible;
+                    return;
+                }
+                try
+                {
+                    var cookies = await wv.CoreWebView2.CookieManager.GetCookiesAsync(null);
+                    var sites = cookies
+                        .Where(c => !string.IsNullOrWhiteSpace(c.Domain))
+                        .GroupBy(c => NormalizeLoginDomain(c.Domain))
+                        .Select(g => new LoginSiteInfo
+                        {
+                            Domain = g.Key,
+                            CookieCount = g.Count(),
+                            HasSession = g.Any(c => LooksLikeSession(c.Name))
+                        })
+                        .OrderByDescending(x => x.CookieCount)
+                        .ToList();
+                    if (sites.Count == 0)
+                    {
+                        status.Text = "暂未检测到登录信息";
+                        status.Visibility = Visibility.Visible;
+                        return;
+                    }
+                    foreach (var site in sites)
+                    {
+                        listPanel.Children.Add(BuildLoginRow(site, RefreshAsync));
+                    }
+                    status.Text = $"共 {sites.Count} 个网站";
+                    status.Visibility = Visibility.Visible;
+                }
+                catch (Exception ex)
+                {
+                    status.Text = "加载失败：" + ex.Message;
+                    status.Visibility = Visibility.Visible;
+                }
+            }
+
+            btnRefresh.Click += async (s, e) => await RefreshAsync();
+            btnClearAll.Click += async (s, e) =>
+            {
+                foreach (var wv in _webViews.Values)
+                {
+                    try { wv.CoreWebView2?.CookieManager.DeleteAllCookies(); } catch { }
+                }
+                await RefreshAsync();
+            };
+
+            _ = RefreshAsync();
+
+            return MakeSection("登录信息", stack);
+        }
+
+        private static string NormalizeLoginDomain(string domain)
+        {
+            var d = (domain ?? "").Trim().TrimStart('.').ToLowerInvariant();
+            if (d.StartsWith("www.")) d = d.Substring(4);
+            return d;
+        }
+
+        private static bool LooksLikeSession(string name)
+        {
+            var n = (name ?? "").ToLowerInvariant();
+            return n.Contains("session") || n.Contains("sid") || n.Contains("token")
+                || n.Contains("auth") || n.Contains("login") || n.Contains("uid")
+                || n.Contains("user_id") || n.Contains("remember") || n.Contains("account")
+                || n.Contains("identity");
+        }
+
+        private async System.Threading.Tasks.Task ClearSiteLoginAsync(string domain)
+        {
+            foreach (var wv in _webViews.Values)
+            {
+                try
+                {
+                    if (wv.CoreWebView2 == null) continue;
+                    var cookies = await wv.CoreWebView2.CookieManager.GetCookiesAsync(null);
+                    foreach (var c in cookies)
+                    {
+                        var cd = (c.Domain ?? "").TrimStart('.').ToLowerInvariant();
+                        if (cd == domain || cd == "www." + domain || cd.EndsWith("." + domain))
+                            wv.CoreWebView2.CookieManager.DeleteCookie(c);
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private Border BuildLoginRow(LoginSiteInfo site, Func<Task> onChanged)
+        {
+            var grid = new Grid { Margin = new Thickness(0, 4, 0, 4) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var left = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            var dot = new Border
+            {
+                Width = 8, Height = 8, CornerRadius = new CornerRadius(4),
+                Background = site.HasSession
+                    ? new SolidColorBrush(Color.FromRgb(0x2F, 0xA8, 0x4F))
+                    : new SolidColorBrush(Color.FromRgb(0x9A, 0x9A, 0x9A)),
+                Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center
+            };
+            var domainTxt = new TextBlock
+            {
+                Text = site.Domain, FontSize = 13,
+                Foreground = (Brush)FindResource("TextColor"),
+                VerticalAlignment = VerticalAlignment.Center,
+                FontWeight = site.HasSession ? FontWeights.SemiBold : FontWeights.Normal
+            };
+            left.Children.Add(dot);
+            left.Children.Add(domainTxt);
+            Grid.SetColumn(left, 0);
+
+            var countTxt = new TextBlock
+            {
+                Text = site.HasSession ? "已登录" : $"{site.CookieCount} 个 Cookie",
+                FontSize = 12, Foreground = (Brush)FindResource("TextColor"), Opacity = 0.55,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0)
+            };
+            Grid.SetColumn(countTxt, 1);
+
+            var btnClear = new Button
+            {
+                Content = "清除", Height = 26, Padding = new Thickness(10, 0, 10, 0),
+                Margin = new Thickness(12, 0, 0, 0), Tag = site.Domain
+            };
+            btnClear.Click += async (s, e) => { await ClearSiteLoginAsync(site.Domain); await onChanged(); };
+            Grid.SetColumn(btnClear, 2);
+
+            grid.Children.Add(left);
+            grid.Children.Add(countTxt);
+            grid.Children.Add(btnClear);
+
+            return new Border
+            {
+                Background = (Brush)FindResource("ToolbarBg"),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(14, 8, 14, 8),
+                Child = grid
+            };
+        }
+
         private FrameworkElement BuildExtensionsPage()
         {
             var stack = new StackPanel();
@@ -4113,7 +4794,7 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                 Width = 130, Height = 32,
                 Margin = new Thickness(0, 0, 8, 0)
             };
-            btnCrx.Click += (s, e) =>
+            btnCrx.Click += async (s, e) =>
             {
                 var dlg = new Microsoft.Win32.OpenFileDialog
                 {
@@ -4121,7 +4802,7 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                     Title = "选择 CRX 文件"
                 };
                 if (dlg.ShowDialog() == true && _extensionsManager != null)
-                    _extensionsManager.ImportCrxAsync(dlg.FileName);
+                    await _extensionsManager.ImportCrxAsync(dlg.FileName);
             };
             btnRow.Children.Add(btnCrx);
 
@@ -4130,11 +4811,11 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                 Content = "📁 导入扩展文件夹",
                 Width = 150, Height = 32
             };
-            btnFolder.Click += (s, e) =>
+            btnFolder.Click += async (s, e) =>
             {
                 var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "选择包含 manifest.json 的文件夹" };
                 if (dlg.ShowDialog() == true && _extensionsManager != null)
-                    _extensionsManager.ImportFolderAsync(dlg.FolderName);
+                    await _extensionsManager.ImportFolderAsync(dlg.FolderName);
             };
             btnRow.Children.Add(btnFolder);
             stack.Children.Add(btnRow);
@@ -4171,7 +4852,7 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             var stack = new StackPanel();
             var title = new TextBlock
             {
-                Text = "2ⁿ Browser",
+                Text = "Polar Bear",
                 FontSize = 24,
                 FontWeight = FontWeights.Bold,
                 Foreground = (Brush)FindResource("TextColor"),
@@ -4180,7 +4861,7 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             stack.Children.Add(title);
             var ver = new TextBlock
             {
-                Text = "版本 1.3.0",
+                Text = $"版本 {App.Version}",
                 FontSize = 14,
                 Foreground = (Brush)FindResource("AccentBlue"),
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -5037,11 +5718,21 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
 
         private void Navigate(string input)
         {
+            // 联想浮层只在地址栏键入时弹出：任何导航动作立即收起
+            CloseSuggestPopup();
+
             settingsPage.Visibility = Visibility.Collapsed;
             webArea.Visibility = Visibility.Visible;
 
             string url;
-            if (input.StartsWith("about:") || input.StartsWith("file:///"))
+            if (input.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
+            {
+                // about:office → 内置极简办公套件；about:home → 首页（WebView2 不触发 NavigationStarting，须在此替换）
+                url = input.Equals("about:office", StringComparison.OrdinalIgnoreCase) ? GetOfficeUrl()
+                    : input.Equals("about:home", StringComparison.OrdinalIgnoreCase) ? GetHomeUrl()
+                    : input;
+            }
+            else if (input.StartsWith("file:///"))
                 url = input;
             else if (Uri.TryCreate(input, UriKind.Absolute, out var uri) &&
                      (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
@@ -5137,7 +5828,6 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
         /// </summary>
         private async void TxtUrl_TextChanged(object sender, TextChangedEventArgs e)
         {
-            // 用户在 Popup 内键盘选择时，TxtUrl 会被 SetText 再次触发；此时不重开 Popup
             if (_suppressTextChanged)
             {
                 _suppressTextChanged = false;
@@ -5145,15 +5835,34 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             }
 
             var text = txtUrl.Text?.Trim() ?? "";
-            _suggestItems.Clear();
-            SuggestPopup.IsOpen = false;
+            _suggestCts?.Cancel();
+
+            // 更新"转到"网址提示行：输入网址时显示当前输入，点击/回车直接跳转
+            try
+            {
+                if (LooksLikeUrl(text))
+                {
+                    SuggestGoText.Text = text;
+                    SuggestGoRow.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    SuggestGoRow.Visibility = Visibility.Collapsed;
+                }
+            }
+            catch { }
+
             if (string.IsNullOrEmpty(text))
             {
-                _suggestCts?.Cancel();
+                _suggestItems.Clear();
+                _popupVersion++;
+                CloseSuggestPopup();
                 return;
             }
 
-            // 先出本地结果（书签>历史 优先级由 QueryLocalSuggest 内部保证）
+            int version = ++_popupVersion;
+            _suggestItems.Clear();
+
             List<AddressSuggestItem> localCandidates = new();
             if (EnableLocalSuggest && _localDb != null)
             {
@@ -5161,36 +5870,35 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                 {
                     localCandidates = _localDb.QueryLocalSuggest(text, SuggestTakeLocalEach);
                 }
-                catch { /* 数据库异常：降级为仅云端 */ }
+                catch { }
             }
             else if (EnableLocalSuggest)
             {
-                // SQLite 不可用，退回到内存中历史/书签
                 localCandidates = FallbackQueryLocalFromMemory(text, SuggestTakeLocalEach);
             }
+
             foreach (var it in localCandidates) _suggestItems.Add(it);
 
+            // 本地建议非空立即弹出；为空时保持浮层打开状态等待云端结果，
+            // 避免打字过程中浮层"关-开"反复闪烁
             if (_suggestItems.Count > 0)
             {
                 OpenSuggestPopup();
-                SuggestListBox.SelectedIndex = -1;
+                if (SuggestListBox.Items.Count > 0)
+                    SuggestListBox.SelectedIndex = -1;
             }
 
-            // ========== 云端联想（防抖 250ms + 取消上一次）==========
-            _suggestCts?.Cancel();
             _suggestCts = new CancellationTokenSource();
             var token = _suggestCts.Token;
 
-            // 无痕模式或开关关闭时，不发网络（直接保留本地候选）
             bool isIncognito = tabList.SelectedItem is TabInfo t && t.IsIncognito;
             if (!EnableCloudSuggest || isIncognito) return;
 
             try
             {
                 await Task.Delay(SuggestDebounceMs, token).ConfigureAwait(true);
-                if (token.IsCancellationRequested) return;
+                if (token.IsCancellationRequested || version != _popupVersion) return;
 
-                // 默认引擎有 SuggestUrl 就用对应引擎，否则百度兜底（覆盖面更广）
                 SearchEngine? defaultEngine = _config.SearchEngines.FirstOrDefault(x => x.Name == _config.DefaultEngine)
                     ?? _config.SearchEngines.FirstOrDefault();
                 List<AddressSuggestItem> cloud;
@@ -5204,9 +5912,8 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                     cloud = await FetchBaiduSuggest(text, token).ConfigureAwait(true);
                 }
 
-                if (token.IsCancellationRequested) return;
+                if (token.IsCancellationRequested || version != _popupVersion) return;
 
-                // 合并云端（去重：URL 唯一；纯搜索词 Url=生成链接，也和本地不重叠）
                 var existUrls = new HashSet<string>(
                     _suggestItems.Select(x => x.Url), StringComparer.OrdinalIgnoreCase);
                 int added = 0;
@@ -5224,35 +5931,123 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                 {
                     OpenSuggestPopup();
                     if (SuggestListBox.SelectedIndex < 0 && localCandidates.Count == 0)
-                        SuggestListBox.SelectedIndex = 0; // 仅有云端结果时默认首项
+                        SuggestListBox.SelectedIndex = 0;
+                }
+                else if (IsSuggestPopupOpen())
+                {
+                    CloseSuggestPopup();
                 }
             }
-            catch (TaskCanceledException) { /* 用户继续输入 / 超时：取消，正常 */ }
-            catch (OperationCanceledException) { /* 用户继续输入，正常 */ }
-            catch (HttpRequestException) { /* 网络失败：保持本地 */ }
-            catch { /* 其他异常：静默 */ }
+            catch (TaskCanceledException) { }
+            catch (OperationCanceledException) { }
+            catch (HttpRequestException) { }
+            catch { }
         }
 
         private bool _suppressTextChanged;
+        private int _popupVersion;
 
         private void OpenSuggestPopup()
         {
+            double w = Math.Max(txtUrl.ActualWidth, 480);
+            if (SuggestPopupBorder != null) SuggestPopupBorder.Width = w;
+            // 打开前先 Absolute 定位，直接出现在地址栏正下方，避免 Custom/Absolute 混用导致跳动
+            RepositionSuggestPopup();
+            SuggestPopup.IsOpen = true;
+        }
+
+        private void CloseSuggestPopup()
+        {
+            SuggestPopup.IsOpen = false;
+        }
+
+        private bool IsSuggestPopupOpen()
+        {
+            return SuggestPopup.IsOpen;
+        }
+
+        /// <summary>判断输入内容是否为网址（域名 / http(s) / about / file），用于回车直接跳转</summary>
+        private static bool LooksLikeUrl(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            var t = s.Trim();
+            if (t.StartsWith("about:", StringComparison.OrdinalIgnoreCase) ||
+                t.StartsWith("file:///", StringComparison.OrdinalIgnoreCase) ||
+                t.StartsWith("chrome://", StringComparison.OrdinalIgnoreCase) ||
+                t.StartsWith("edge://", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (Uri.TryCreate(t, UriKind.Absolute, out var u) &&
+                (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps || u.Scheme == "ftp"))
+                return true;
+            // 含点且无空格、长度合理、非纯数字 → 视为域名
+            if (!t.Contains(' ') && t.Contains('.') && t.Length >= 4)
+            {
+                var lastDot = t.LastIndexOf('.');
+                if (lastDot > 0 && lastDot < t.Length - 1 && !t.All(char.IsDigit))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>联想浮层 Absolute 定位：钉在地址栏正下方（打开与跟随共用同一逻辑，位置稳定不跳动）</summary>
+        private void RepositionSuggestPopup()
+        {
+            if (SuggestPopup == null || txtUrl == null) return;
+            var src = PresentationSource.FromVisual(txtUrl);
+            double scale = 1.0;
+            if (src?.CompositionTarget?.TransformToDevice != null)
+                scale = src.CompositionTarget.TransformToDevice.M11;
+            if (scale <= 0) scale = 1.0;
+            // PointToScreen 返回设备像素，Popup 偏移量为 DIP，需换算
+            var pt = txtUrl.PointToScreen(new Point(0, txtUrl.ActualHeight));
+            SuggestPopup.Placement = PlacementMode.Absolute;
+            SuggestPopup.HorizontalOffset = pt.X / scale;
+            SuggestPopup.VerticalOffset = pt.Y / scale + 4;
+        }
+
+        /// <summary>窗口移动/缩放时强制联想浮层重新定位，保证跟随主窗口</summary>
+        private void OnWindowTransformChanged(object? sender, EventArgs e)
+        {
             try
             {
-                // 让 Popup 宽度跟随地址栏
-                if (SuggestPopup.Child is Border b)
-                    b.Width = Math.Max(txtUrl.ActualWidth, 480);
-                SuggestPopup.IsOpen = true;
+                if (SuggestPopup == null || !SuggestPopup.IsOpen) return;
+                RepositionSuggestPopup();
             }
             catch { }
         }
 
+        /// <summary>点击窗口内非地址栏/非联想浮层区域时关闭联想浮层（标准浏览器行为）</summary>
+        private void MainWindow_PreviewMouseDownSuggest(object sender, MouseButtonEventArgs e)
+        {
+            try
+            {
+                if (SuggestPopup == null || !SuggestPopup.IsOpen) return;
+                var hit = e.OriginalSource as DependencyObject;
+                if (hit == null) return;
+                // 点击在地址栏内 → 不关闭
+                if (txtUrl != null && (hit == txtUrl || IsDescendantOf(hit, txtUrl))) return;
+                // 点击在联想浮层内 → 不关闭
+                if (SuggestPopup.Child != null && (hit == SuggestPopup.Child || IsDescendantOf(hit, SuggestPopup.Child))) return;
+                CloseSuggestPopup();
+            }
+            catch { }
+        }
+
+        private static bool IsDescendantOf(DependencyObject child, DependencyObject parent)
+        {
+            var current = child;
+            while (current != null)
+            {
+                if (current == parent) return true;
+                current = VisualTreeHelper.GetParent(current);
+            }
+            return false;
+        }
+
         private void TxtUrl_LostFocus(object sender, RoutedEventArgs e)
         {
-            // 点击 Popup 中的项时也会触发 LostFocus；延迟一小会儿关闭，
-            // 让 SelectionChanged 先处理，之后再关
             if (SuggestPopup.IsKeyboardFocusWithin || SuggestListBox.IsMouseOver) return;
-            SuggestPopup.IsOpen = false;
+            CloseSuggestPopup();
         }
 
         /// <summary>当 SQLite 不可用时回退到内存 JSON 做联想</summary>
@@ -5383,12 +6178,12 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
         protected override void OnPreviewKeyDown(KeyEventArgs e)
         {
             base.OnPreviewKeyDown(e);
-            if (!SuggestPopup.IsOpen) return;
+            if (!IsSuggestPopupOpen()) return;
 
             switch (e.Key)
             {
                 case Key.Escape:
-                    SuggestPopup.IsOpen = false;
+                    CloseSuggestPopup();
                     e.Handled = true;
                     return;
                 case Key.Down:
@@ -5410,14 +6205,25 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
                     e.Handled = true;
                     return;
                 case Key.Enter:
+                {
+                    // 输入的是网址 → 直接跳转（与 Edge/Chrome 一致），不被联想项劫持
+                    var raw = txtUrl.Text?.Trim() ?? "";
+                    if (LooksLikeUrl(raw))
+                    {
+                        CloseSuggestPopup();
+                        Navigate(raw);
+                        e.Handled = true;
+                        return;
+                    }
                     if (SuggestListBox.SelectedItem is AddressSuggestItem sel)
                     {
                         ApplySuggestItem(sel);
                         e.Handled = true;
                     }
                     return;
+                }
                 case Key.Tab:
-                    SuggestPopup.IsOpen = false;
+                    CloseSuggestPopup();
                     return;
             }
         }
@@ -5444,10 +6250,23 @@ if(pw&&d[0].p){pw.value=d[0].p;pw.dispatchEvent(new Event('input',{bubbles:true}
             }
         }
 
+        /// <summary>点击"转到 xxx"行：直接跳转到地址栏输入的网址</summary>
+        private void SuggestGoRow_Click(object sender, MouseButtonEventArgs e)
+        {
+            try
+            {
+                var input = txtUrl.Text?.Trim() ?? "";
+                if (string.IsNullOrEmpty(input)) return;
+                CloseSuggestPopup();
+                Navigate(input);
+            }
+            catch { }
+        }
+
         /// <summary>把候选项应用到地址栏并导航</summary>
         private void ApplySuggestItem(AddressSuggestItem it)
         {
-            SuggestPopup.IsOpen = false;
+            CloseSuggestPopup();
             // 云端搜索词：直接跳转到生成的搜索 URL
             // 本地历史/书签：也跳 Url；并且把输入框文字设置为 URL 看起来更顺
             _suppressTextChanged = true;

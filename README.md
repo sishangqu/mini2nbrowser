@@ -142,7 +142,7 @@
 - **预置 7 个引擎**：必应（默认）、百度、搜狗、360、头条搜索、GitHub、StackOverflow
 - **地址栏关键字触发**：输入 `gh wpf` → GitHub 搜索；`bd xxx` → 百度搜索；`so xxx` → StackOverflow
 - **一键切换默认引擎**，管理面板支持新增 / 删除 / 编辑 URL 模板
-- **配置持久化**：JSON 保存到 `%AppData%/mini2nbrowser/config.json`，重启自动恢复
+- **配置持久化**：JSON 保存到数据目录 `config.json`（exe 同目录或 `Profiles\<name>\`），重启自动恢复
 - **旧配置自动迁移**：`{0}` → `%s` 占位符、旧引擎名自动映射
 - 支持自定义 `Keyword` / `SearchUrl` / `SuggestUrl`
 
@@ -328,29 +328,28 @@ dotnet publish mini2nbrowser\mini2nbrowser.csproj -c Release -r win-x64 ^
 
 ## 📁 数据存储
 
-所有用户数据按 profile 隔离：
-- **浏览器数据**（历史/书签/密码/扩展/Cookie）存于 exe 同目录（或 `Profiles\<name>\` 子目录）
-- **全局配置**（主题/搜索引擎/防护开关）存于 `%AppData%\mini2nbrowser\config.json`，多 Profile 共享
-- **媒体站点缓存**存于 `%AppData%\mini2nbrowser\media_site_cache.json`（v1.6+）
+所有用户数据按 profile 隔离，统一存于 exe 同目录（或 `Profiles\<name>\` 子目录）：
+- **浏览器数据**（历史/书签/密码/扩展/Cookie/配置）存于 exe 同目录（或 `Profiles\<name>\` 子目录）
+- **全局配置**（config.json：主题/搜索引擎/防护开关）随 profile 隔离存于同一数据目录，不同 profile 配置独立
+- **媒体站点缓存**存于 exe 同目录 `media_site_cache.json`（v1.6+）
+- **崩溃日志**（crash.log）写于 exe 同目录，2MB 自动轮转（v1.9.1+）
 
 ```
 mini2nbrowser.exe
+├── config.json          # 配置：主题 / 搜索引擎 / 防护开关
 ├── bookmarks.json       # 书签（v1.5+ 同时写入 SQLite）
 ├── history.json         # 历史记录（最多 500 条；v1.5+ 同时写入 SQLite）
 ├── browser.db          # SQLite 数据库：History / Bookmark 表 + 索引【v1.5】
 ├── scripts.json        # 油猴脚本
 ├── passwords.json      # 密码（DPAPI 加密）
 ├── extensions.json     # 扩展记录
+├── media_site_cache.json # 媒体下载站点缓存：每站点并发上限 + 时间戳，7 天有效【v1.6】
+├── crash.log           # 崩溃日志：自动捕获未处理异常，2MB 自动轮转【v1.9.1】
 ├── Extensions\          # 扩展解压目录
 ├── WebViewData\         # WebView2 用户数据（Cookie、缓存等）
-└── Profiles\            # 多 profile 数据
+└── Profiles\            # 多 profile 数据（各自含上述 config/data 文件）
     ├── work\
     └── personal\
-
-%AppData%\mini2nbrowser\
-├── config.json          # 全局配置：主题 / 搜索引擎 / 防护开关（v1.4+ 迁移到此）
-├── media_site_cache.json # 媒体下载站点缓存：每站点并发上限 + 时间戳，7 天有效【v1.6】
-└── crash.log            # 崩溃日志（v1.9.1+）：自动捕获未处理异常，2MB 自动轮转
 ```
 
 ---
@@ -381,7 +380,7 @@ mini2nbrowser.exe
 - 🛡️ **三层全局异常防护**
   - `DispatcherUnhandledException`（UI 线程）+ `AppDomain.UnhandledException`（非 UI 最后防线）+ `TaskScheduler.UnobservedTaskException`（Task GC 回收）全覆盖
   - `IsRecoverable` 智能判定：COM 异常 / ObjectDisposed / IOException / NullReference / 集合修改异常标记为已处理后继续运行，不杀进程
-  - 崩溃日志自动写入 `%AppData%\mini2nbrowser\crash.log`（2MB 自动轮转 crash.log.old）
+  - 崩溃日志自动写入数据目录 `crash.log`（exe 同目录，2MB 自动轮转 crash.log.old）
 - 🔒 **关闭流程全面加固**
   - 新增 `volatile bool _isShuttingDown` 跨线程可见标志，所有定时器/事件回调在入口处快速退出
   - 关窗顺序：设标志 → 取消下载 CTS → 隐藏所有 WebView2 → Children.Clear → 延迟（Background 优先级）Dispose，避免事件回调访问已释放 COM 对象
@@ -494,7 +493,7 @@ mini2nbrowser.exe
   - 预置 7 个引擎：必应（默认）、百度、搜狗、360、头条搜索、GitHub、StackOverflow
   - 地址栏关键字触发：`gh xxx` → GitHub、`bd xxx` → 百度、`so xxx` → StackOverflow 等
   - 管理面板：新增 / 删除 / 编辑、一键切换默认引擎、支持 `Keyword` + `SearchUrl` + `SuggestUrl`
-  - 全局配置持久化到 `%AppData%\mini2nbrowser\config.json`，多 Profile 共享，旧配置自动迁移
+  - 全局配置持久化到数据目录 `config.json`，按 profile 隔离，旧配置自动迁移
 - 🆕 **PDF 批注侧边面板**
   - 菜单项「打开本地 PDF...」或拖入窗口即可打开
   - WPF 右侧浮动面板，**不遮挡 WebView2 原生 PDF 控件**（缩放/保存/旋转/分页）
